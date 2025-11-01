@@ -22,6 +22,7 @@ for idx in range(3):
     print(f"  Frames shape: {frames.shape}")
     print(f"  Metadata: {metadata}")
 
+"""
 print("Testing reconstruction to ensure that tensors represent the same video frames after processing.")
 frames, metadata = loader[10]
 frames_np = frames.permute(0,2,3,1).cpu().numpy()  # Convert to numpy array with shape (T, H, W, C)
@@ -30,3 +31,5 @@ frames_np = np.clip(frames_np * 255.0, 0, 255).astype(np.uint8)
 out_path = "reconstruction.mp4"
 imageio.mimsave(out_path, frames_np, fps=20)
 print(f"Saved reconstructed clip → {out_path}")
+"""
+

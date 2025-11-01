@@ -21,6 +21,11 @@ class VideoLoader:
     """
     Input raw mp4 video files from a directory, sample frames at target fps, resize frames, and return as tensor clips.
     [Frame, 3 (number of channels RGB), Height, Width]
+
+    Video 1:
+        Frames shape: torch.Size([64, 3, 384, 640])
+        Metadata: {'video_id': 'cheeky-cornflower-setter-8106e54c1f1d-20220420-205328', 'orig_frame_count': 64, 'clip_length': 64}
+    Testing loader with max_frames=64 for video index 2
     """
 
     def __init__(self, 
