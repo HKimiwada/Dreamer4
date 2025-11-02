@@ -11,7 +11,7 @@ import torch
 from tokenizer.dataset import VideoLoader          # Stage A
 from tokenizer.temporal_slicer import TemporalSlicer  # Stage B
 from tokenizer.patchify_mask import Patchifier     # Stage C (your Patchifier)
-from tokenizer.masking import MaskGenerator        # Stage C (mask only)
+from tokenizer.patchify_mask import MaskGenerator        # Stage C (mask only)
 
 class TokenizerDataset:
     def __init__(
