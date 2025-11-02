@@ -20,12 +20,18 @@ class RMSNorm(nn.Module):
         return output
 
 class FeedForward(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size):
+    def __init__(self, input_size, hidden_size):
         super(FeedForward, self).__init__()
-        # 全結合層の定義
-        self.fc1 = nn.Linear(input_size, hidden_size)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(hidden_size, output_size)
+        # Project up to 2 * hidden_size for splitting
+        self.up = nn.Linear(input_size, 2 * hidden_size)
+        self.down = nn.Linear(hidden_size, input_size)
+        self.dropout = nn.Dropout(0.1)
     
     def forward(self, x):
-        pass
+        # Split the projection into two halves
+        a, b = self.up(x).chunk(2, dim=-1)
+        # SwiGLU activation: a * sigmoid(b)
+        x = a * torch.sigmoid(b)
+        # Project back down
+        x = self.dropout(self.down(x))
+        return x
