@@ -10,10 +10,10 @@ import copy
 
 class RMSNorm(nn.Module):
     # Normalization layer to normalize input vectors and stabilize training. 
-    def __init__(self, d_model, eps=1e-8):
+    def __init__(self, input_size, eps=1e-8):
         super(RMSNorm, self).__init__()
         self.eps = eps
-        self.scale = nn.Parameter(torch.ones(d_model))
+        self.scale = nn.Parameter(torch.ones(input_size))
 
     def forward(self, x):
         ms = x.pow(2).mean(dim=-1, keepdim=True)
@@ -96,17 +96,27 @@ class BlockCausalTransformer(nn.Module):
     Each instance of the BlockCausalTransformer performs following operations:
         1. Normalizes its input (RMSNorm)
         2. Applies self-attention (MultiHeadAttention)
-        3. Adds a residual connection (skip connection)
+        3. Adds a residual connection (skip connection: adding attention output to original input)
         4. Normalizes again (RMSNorm)
         5. Applies a feedforward layer
         6. Adds another residual connection
+
+    Dreamer4 alternates between:
+        3 spatial blocks (causal=False)
+        1 temporal block (causal=True)
     """
     def __init__(self, input_size, num_heads, hidden_size, causal: bool, causal_masking_function):
         super().__init__()
-        self.norm1 = RMSNorm(dim)
-        self.norm2 = RMSNorm(dim)
-        self.attn = MultiHeadAttention(dim, num_heads, causal, causal_masking_function)
-        self.ffn = FeedForward(dim, hidden_size=int(4*dim))
+        self.norm1 = RMSNorm(input_size)
+        self.norm2 = RMSNorm(input_size)
+        self.attn = MultiHeadAttention(input_size, num_heads, causal, causal_masking_function)
+        self.ffn = FeedForward(input_size, hidden_size=int(4*input_size))
        
     def forward(self, x):
-        pass
+        norm_x = self.norm1(x)
+        attn_output = self.attn(norm_x)
+        x = x + attn_output  
+        norm_x = self.norm2(x)
+        ffn_output = self.ffn(norm_x)
+        x = x + ffn_output
+        return x
