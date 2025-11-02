@@ -102,14 +102,14 @@ class BlockCausalTransformer(nn.Module):
         6. Adds another residual connection
 
     Dreamer4 alternates between:
-        3 spatial blocks (causal=False)
-        1 temporal block (causal=True)
+        3 spatial blocks (causal_time=False)
+        1 temporal block (causal_time=True)
     """
-    def __init__(self, input_size, num_heads, hidden_size, causal: bool, causal_masking_function):
+    def __init__(self, input_size, num_heads, causal_time: bool, causal_masking_function):
         super().__init__()
         self.norm1 = RMSNorm(input_size)
         self.norm2 = RMSNorm(input_size)
-        self.attn = MultiHeadAttention(input_size, num_heads, causal, causal_masking_function)
+        self.attn = MultiHeadAttention(input_size, num_heads, causal_time, causal_masking_function)
         self.ffn = FeedForward(input_size, hidden_size=int(4*input_size))
        
     def forward(self, x):
