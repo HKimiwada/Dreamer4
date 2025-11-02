@@ -9,6 +9,7 @@ import math
 import copy
 
 class RMSNorm(nn.Module):
+    # Normalization layer to normalize input vectors and stabilize training. 
     def __init__(self, d_model, eps=1e-8):
         super(RMSNorm, self).__init__()
         self.eps = eps
@@ -22,7 +23,7 @@ class RMSNorm(nn.Module):
 
 class FeedForward(nn.Module):
     def __init__(self, input_size, hidden_size):
-        super(FeedForward, self).__init__()
+        super().__init__()
         # Project up to 2 * hidden_size for splitting
         self.up = nn.Linear(input_size, 2 * hidden_size)
         self.down = nn.Linear(hidden_size, input_size)
@@ -52,7 +53,7 @@ class MultiHeadAttention(nn.Module):
     (causal: by toggling on can mask future frames, by toggling off can disable masking when looking at one frame).
     """
     def __init__(self, input_size, num_heads, causal: bool, causal_masking_function):
-        super(MultiHeadAttention, self).__init__()
+        super().__init__()
         assert input_size % num_heads == 0 , "input_size must be divisible by num_heads"
         self.num_heads = num_heads
         self.head_dim = input_size // num_heads
@@ -87,8 +88,25 @@ class MultiHeadAttention(nn.Module):
         return attn_output
 
 class BlockCausalTransformer(nn.Module):
+    """
+    Combines normalization, attention, feedforward, skip connections into one self-contained transformer layer.
+    Dreamer 4 uses this block in every part of the world model (tokenizer, dynamics, etc.),
+    with causal_time=True for temporal layers and False for spatial ones.
+
+    Each instance of the BlockCausalTransformer performs following operations:
+        1. Normalizes its input (RMSNorm)
+        2. Applies self-attention (MultiHeadAttention)
+        3. Adds a residual connection (skip connection)
+        4. Normalizes again (RMSNorm)
+        5. Applies a feedforward layer
+        6. Adds another residual connection
+    """
     def __init__(self, input_size, num_heads, hidden_size, causal: bool, causal_masking_function):
-        super(BlockCausalTransformer, self).__init__()
+        super().__init__()
+        self.norm1 = RMSNorm(dim)
+        self.norm2 = RMSNorm(dim)
+        self.attn = MultiHeadAttention(dim, num_heads, causal, causal_masking_function)
+        self.ffn = FeedForward(dim, hidden_size=int(4*dim))
        
     def forward(self, x):
         pass
