@@ -5,4 +5,11 @@ High-level overview:
 encoder_decoder.py:
     Defines how the tokenizer as a whole works (high-level pipeline). 
     Uses modules defined in transformer_blocks.py. 
+Conceptual Overview:
+    1. Input (masked patches)
+    2. Stack of spatial + temporal blocks (encoder)
+    3. tanh bottleneck
+    4. Stack of spatial + temporal blocks (decoder)
+    5. Linear projection 
+    6. Output (reconstructed patches)
 """
