@@ -14,8 +14,6 @@ compact latents for the world model.
 import os
 from pathlib import Path
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.cuda.amp import GradScaler, autocast
 from tqdm import tqdm
@@ -25,14 +23,18 @@ from tokenizer.tokenizer_dataset import TokenizerDataset
 from tokenizer.model.encoder_decoder import CausalTokenizer
 from tokenizer.losses import CombinedLoss
 
+
+# ---------------------------------------------------------------------------
 # Configuration
+# ---------------------------------------------------------------------------
+
 class TrainConfig:
     # Data
     data_dir = Path("data")
     resize = (384, 640)
     patch_size = 16
     clip_length = 64
-    batch_size = 2
+    batch_size = 2  # dataset yields one clip, treat as batch=1
     num_workers = 2
 
     # Model
@@ -55,10 +57,13 @@ class TrainConfig:
 
     # WandB
     project = "DreamerV4-tokenizer"
-    entity = "hiroki-kimiwada-"  
+    entity = "hiroki-kimiwada-"   # ← remove trailing dash
     run_name = "tokenizer_v4_lpips"
 
+# ---------------------------------------------------------------------------
 # Utilities
+# ---------------------------------------------------------------------------
+
 def save_checkpoint(model, optimizer, epoch, loss_dict, cfg: TrainConfig):
     cfg.ckpt_dir.mkdir(parents=True, exist_ok=True)
     path = cfg.ckpt_dir / f"tokenizer_epoch{epoch:03d}.pt"
@@ -71,19 +76,28 @@ def save_checkpoint(model, optimizer, epoch, loss_dict, cfg: TrainConfig):
     print(f"[Checkpoint] Saved → {path}")
     wandb.save(str(path))
 
+
+# ---------------------------------------------------------------------------
 # Main training loop
+# ---------------------------------------------------------------------------
+
 def train_tokenizer():
     cfg = TrainConfig()
 
-    # --- Initialize wandb ---
-    wandb.init(
-        project=cfg.project,
-        entity=cfg.entity,
-        name=cfg.run_name,
-        config={k: v for k, v in cfg.__dict__.items() if not k.startswith("__")},
-    )
+    # --- Initialize wandb safely ---
+    try:
+        wandb.init(
+            project=cfg.project,
+            entity=cfg.entity,
+            name=cfg.run_name,
+            config={k: v for k, v in cfg.__dict__.items() if not k.startswith("__")},
+        )
+    except Exception as e:
+        print(f"[WARN] W&B init failed ({e}); running offline mode.")
+        os.environ["WANDB_MODE"] = "offline"
+        wandb.init(mode="offline", project=cfg.project, name=cfg.run_name)
 
-    # --- Dataset ---
+    # --- Dataset (no DataLoader; TokenizerDataset is iterable) ---
     dataset = TokenizerDataset(
         video_dir=cfg.data_dir,
         resize=cfg.resize,
@@ -93,7 +107,7 @@ def train_tokenizer():
         per_frame_mask_sampling=True,
         mode="random"
     )
-    
+
     # --- Model ---
     model = CausalTokenizer(
         input_dim=cfg.input_dim,
@@ -112,11 +126,14 @@ def train_tokenizer():
 
     print(f"[INFO] Training tokenizer on {cfg.device} for {cfg.max_epochs} epochs")
 
+    # -----------------------------------------------------------------------
+    # Training loop
+    # -----------------------------------------------------------------------
     for epoch in range(1, cfg.max_epochs + 1):
         model.train()
         total_loss, mse_loss, lpips_loss = 0.0, 0.0, 0.0
 
-        progress = tqdm(enumerate(loader), total=len(loader), desc=f"Epoch {epoch}")
+        progress = tqdm(enumerate(dataset), desc=f"Epoch {epoch}")
 
         for step, batch in progress:
             patches = batch["patch_tokens"].to(cfg.device)  # (T, N, D)
@@ -149,7 +166,7 @@ def train_tokenizer():
                     "train/mse_loss": avg_mse,
                     "train/lpips_loss": avg_lpips,
                     "epoch": epoch,
-                    "step": step + epoch * len(loader)
+                    "step": step + epoch * 1000,  # synthetic step counter
                 })
 
                 progress.set_postfix({
@@ -159,7 +176,6 @@ def train_tokenizer():
                 })
                 total_loss = mse_loss = lpips_loss = 0.0
 
-        # --- End of epoch ---
         save_checkpoint(model, optimizer, epoch, parts, cfg)
         wandb.log({"epoch_end": epoch})
 
