@@ -1,4 +1,6 @@
 """
+wandb login
+PYTHONPATH=. python training_script/train_tokenizer.py
 Overview of Training script for tokenizer:
     1. Load video patch data from your preprocessed dataset (TokenizerDataset).
     2. Feed it into the tokenizer (encoder–decoder).
@@ -9,60 +11,159 @@ Goal:
 A trained tokenizer whose encoder + tanh bottleneck produce stable, 
 compact latents for the world model.
 """
+import os
+from pathlib import Path
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
+from torch.cuda.amp import GradScaler, autocast
+from tqdm import tqdm
+import wandb
 
 from tokenizer.tokenizer_dataset import TokenizerDataset
-from tokenizer.model.encoder_decoder import CausalTokenizer  
-from tokenizer.losses import CombinedLoss # MSE + Perceptual (LPIPS) loss                      
+from tokenizer.model.encoder_decoder import CausalTokenizer
+from tokenizer.losses import CombinedLoss
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.manual_seed(42)
+# Configuration
+class TrainConfig:
+    # Data
+    data_dir = Path("data")
+    resize = (384, 640)
+    patch_size = 16
+    clip_length = 64
+    batch_size = 2
+    num_workers = 2
 
-config = {
-    # data
-    "video_dir": "data/",       # path to preprocessed videos
-    "batch_size": 4,
-    "num_workers": 4,
+    # Model
+    input_dim = 3 * patch_size * patch_size
+    embed_dim = 768
+    latent_dim = 256
+    num_heads = 8
+    num_layers = 12
 
-    # model
-    "input_dim": 768,
-    "embed_dim": 768,
-    "latent_dim": 256,
-    "num_layers": 12,
-    "num_heads": 8,
+    # Optimization
+    lr = 1e-4
+    weight_decay = 0.05
+    max_epochs = 5
+    log_interval = 25
+    ckpt_dir = Path("checkpoints")
 
-    # training
-    "epochs": 100,
-    "lr": 1e-4,
-    "weight_decay": 0.05,
-    "save_dir": "checkpoints/",
-    "log_interval": 50,
-}
+    # Loss
+    alpha = 0.2  # LPIPS weighting
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-train_dataset = TokenizerDataset(
-    video_dir=config["video_dir"],
-    clip_length=64,
-    mode="random",             # random clips for diversity
-    mask_prob_range=(0.0, 0.9),
-)
+    # WandB
+    project = "DreamerV4-tokenizer"
+    entity = "hiroki-kimiwada-"  
+    run_name = "tokenizer_v4_lpips"
 
-train_loader = DataLoader(
-    train_dataset,
-    batch_size=config["batch_size"],
-    shuffle=True,
-    num_workers=config["num_workers"],
-)
+# Utilities
+def save_checkpoint(model, optimizer, epoch, loss_dict, cfg: TrainConfig):
+    cfg.ckpt_dir.mkdir(parents=True, exist_ok=True)
+    path = cfg.ckpt_dir / f"tokenizer_epoch{epoch:03d}.pt"
+    torch.save({
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "epoch": epoch,
+        "loss": loss_dict,
+    }, path)
+    print(f"[Checkpoint] Saved → {path}")
+    wandb.save(str(path))
 
-model = CausalTokenizer(
-    input_dim=config["input_dim"],
-    embed_dim=config["embed_dim"],
-    latent_dim=config["latent_dim"],
-    num_heads=config["num_heads"],
-    num_layers=config["num_layers"],
-).to(device)
+# Main training loop
+def train_tokenizer():
+    cfg = TrainConfig()
 
-optimizer = AdamW(model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"])
-loss_fn = CombinedLoss(alpha=0.2)
+    # --- Initialize wandb ---
+    wandb.init(
+        project=cfg.project,
+        entity=cfg.entity,
+        name=cfg.run_name,
+        config={k: v for k, v in cfg.__dict__.items() if not k.startswith("__")},
+    )
+
+    # --- Dataset ---
+    dataset = TokenizerDataset(
+        video_dir=cfg.data_dir,
+        resize=cfg.resize,
+        clip_length=cfg.clip_length,
+        patch_size=cfg.patch_size,
+        mask_prob_range=(0.1, 0.9),
+        per_frame_mask_sampling=True,
+        mode="random"
+    )
+    
+    # --- Model ---
+    model = CausalTokenizer(
+        input_dim=cfg.input_dim,
+        embed_dim=cfg.embed_dim,
+        num_heads=cfg.num_heads,
+        num_layers=cfg.num_layers,
+        latent_dim=cfg.latent_dim,
+    ).to(cfg.device)
+
+    # --- Loss & optimizer ---
+    criterion = CombinedLoss(alpha=cfg.alpha).to(cfg.device)
+    optimizer = AdamW(model.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+    scaler = GradScaler()
+
+    wandb.watch(model, criterion, log="all", log_freq=cfg.log_interval)
+
+    print(f"[INFO] Training tokenizer on {cfg.device} for {cfg.max_epochs} epochs")
+
+    for epoch in range(1, cfg.max_epochs + 1):
+        model.train()
+        total_loss, mse_loss, lpips_loss = 0.0, 0.0, 0.0
+
+        progress = tqdm(enumerate(loader), total=len(loader), desc=f"Epoch {epoch}")
+
+        for step, batch in progress:
+            patches = batch["patch_tokens"].to(cfg.device)  # (T, N, D)
+            mask = batch["mask"].to(cfg.device)              # (T, N)
+
+            # Add batch dimension (B=1 if dataset yields one clip)
+            patches = patches.unsqueeze(0)
+            mask = mask.unsqueeze(0)
+
+            with autocast():
+                recon = model(patches, mask)
+                loss, parts = criterion(recon, patches, mask.unsqueeze(-1))
+
+            optimizer.zero_grad()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+
+            total_loss += loss.item()
+            mse_loss += parts["mse"]
+            lpips_loss += parts["lpips"]
+
+            if (step + 1) % cfg.log_interval == 0:
+                avg_total = total_loss / cfg.log_interval
+                avg_mse = mse_loss / cfg.log_interval
+                avg_lpips = lpips_loss / cfg.log_interval
+
+                wandb.log({
+                    "train/total_loss": avg_total,
+                    "train/mse_loss": avg_mse,
+                    "train/lpips_loss": avg_lpips,
+                    "epoch": epoch,
+                    "step": step + epoch * len(loader)
+                })
+
+                progress.set_postfix({
+                    "total": f"{avg_total:.4f}",
+                    "mse": f"{avg_mse:.4f}",
+                    "lpips": f"{avg_lpips:.4f}",
+                })
+                total_loss = mse_loss = lpips_loss = 0.0
+
+        # --- End of epoch ---
+        save_checkpoint(model, optimizer, epoch, parts, cfg)
+        wandb.log({"epoch_end": epoch})
+
+    wandb.finish()
+
+if __name__ == "__main__":
+    train_tokenizer()
