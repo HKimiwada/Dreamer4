@@ -108,22 +108,41 @@ class CombinedLoss(nn.Module):
 
     def forward(self, recon: torch.Tensor, target: torch.Tensor, mask: torch.Tensor = None):
         """
+        Compute combined MSE + LPIPS loss.
+        Works for both image (B,3,H,W) and video (B,T,3,H,W) inputs.
+
         Args:
-            recon, target: (B, C, H, W)
-            mask: optional mask (B,1,H,W) or (B,C,H,W)
+            recon, target: (B, C, H, W) or (B, T, C, H, W)
+            mask: optional mask matching spatial dims,
+                e.g. (B, 1, H, W), (B, C, H, W), or (B, T, 1, H, W)
         Returns:
-            tuple(total_loss, dict_of_individual_losses)
+            total_loss: scalar tensor
+            parts: dict with 'mse' and 'lpips'
         """
+        # --- Handle video inputs (B,T,C,H,W) ---
+        if recon.dim() == 5:
+            B, T, C, H, W = recon.shape
+            recon_2d  = recon.reshape(B * T, C, H, W)
+            target_2d = target.reshape(B * T, C, H, W)
+            if mask is not None:
+                # (B,T,1,H,W) or (B,T,H,W) -> (B*T,1,H,W)
+                if mask.dim() == 5:
+                    mask_2d = mask.view(B * T, 1, H, W)
+                elif mask.dim() == 4:
+                    mask_2d = mask.unsqueeze(1).repeat(1, T, 1, 1, 1).view(B * T, 1, H, W)
+                else:
+                    mask_2d = None
+            else:
+                mask_2d = None
+        else:
+            # --- Handle image inputs (B,C,H,W) ---
+            recon_2d, target_2d, mask_2d = recon, target, mask
+
+        # --- Compute losses ---
         mse_val = self.mse_loss(recon, target, mask)
-        lpips_val = self.lpips_loss(recon, target, mask)
+        lpips_val = self.lpips_loss(recon_2d, target_2d, mask_2d)
+
         total = (1.0 - self.alpha) * mse_val + self.alpha * lpips_val
+
         return total, {'mse': mse_val.item(), 'lpips': lpips_val.item()}
 
-if __name__ == "__main__":
-    # quick sanity check
-    recon = torch.rand(2, 3, 64, 64)
-    target = torch.rand(2, 3, 64, 64)
-    mask = torch.ones_like(recon[:, :1, :, :])
-    loss_fn = CombinedLoss(alpha=0.3)
-    total_loss, parts = loss_fn(recon, target, mask)
-    print(f"Total: {total_loss.item()}, parts: {parts}")
