@@ -1,0 +1,13 @@
+{"time":"2025-11-05T09:15:53.145450242+09:00","level":"INFO","msg":"stream: starting","core version":"0.22.3"}
+{"time":"2025-11-05T09:15:53.571138126+09:00","level":"INFO","msg":"stream: created new stream","id":"hcwbges8"}
+{"time":"2025-11-05T09:15:53.571278013+09:00","level":"INFO","msg":"handler: started","stream_id":"hcwbges8"}
+{"time":"2025-11-05T09:15:53.571502405+09:00","level":"INFO","msg":"stream: started","id":"hcwbges8"}
+{"time":"2025-11-05T09:15:53.57154715+09:00","level":"INFO","msg":"writer: started","stream_id":"hcwbges8"}
+{"time":"2025-11-05T09:15:53.571597206+09:00","level":"INFO","msg":"sender: started","stream_id":"hcwbges8"}
+{"time":"2025-11-05T09:20:33.475736853+09:00","level":"INFO","msg":"api: retrying HTTP error","status":502,"url":"https://api.wandb.ai/files/hiroki-kimiwada-/DreamerV4-tokenizer/hcwbges8/file_stream","body":"\n<html><head>\n<meta http-equiv=\"content-type\" content=\"text/html;charset=utf-8\">\n<title>502 Server Error</title>\n</head>\n<body text=#000000 bgcolor=#ffffff>\n<h1>Error: Server Error</h1>\n<h2>The server encountered a temporary error and could not complete your request.<p>Please try again in 30 seconds.</h2>\n<h2></h2>\n</body></html>\n"}
+{"time":"2025-11-05T10:49:09.460612701+09:00","level":"INFO","msg":"api: retrying HTTP error","status":502,"url":"https://api.wandb.ai/files/hiroki-kimiwada-/DreamerV4-tokenizer/hcwbges8/file_stream","body":"\n<html><head>\n<meta http-equiv=\"content-type\" content=\"text/html;charset=utf-8\">\n<title>502 Server Error</title>\n</head>\n<body text=#000000 bgcolor=#ffffff>\n<h1>Error: Server Error</h1>\n<h2>The server encountered a temporary error and could not complete your request.<p>Please try again in 30 seconds.</h2>\n<h2></h2>\n</body></html>\n"}
+{"time":"2025-11-05T12:16:06.287415194+09:00","level":"INFO","msg":"stream: closing","id":"hcwbges8"}
+{"time":"2025-11-05T12:16:15.106266458+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-11-05T12:16:15.32939097+09:00","level":"INFO","msg":"handler: closed","stream_id":"hcwbges8"}
+{"time":"2025-11-05T12:16:15.329684069+09:00","level":"INFO","msg":"sender: closed","stream_id":"hcwbges8"}
+{"time":"2025-11-05T12:16:15.329741114+09:00","level":"INFO","msg":"stream: closed","id":"hcwbges8"}
