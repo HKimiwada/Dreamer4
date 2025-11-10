@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import lpips
+from einops import rearrange
 
 class MSELoss(nn.Module):
     """
@@ -33,22 +34,7 @@ class MSELoss(nn.Module):
         else:
             return F.mse_loss(recon, target)
 
-
 class CombinedLoss(nn.Module):
-    """
-    Combined MSE + LPIPS loss as used in Dreamer4.
-    
-    Loss = MSE + λ * LPIPS
-    
-    Supports both patch-based and image-based inputs.
-    For patches, unpatchifies them internally before computing LPIPS.
-    
-    Args:
-        lpips_weight: Weight for LPIPS loss (default 0.1 as in paper)
-        lpips_net: Network for LPIPS ('alex', 'vgg', or 'squeeze')
-        patch_size: Size of patches (required if using patch inputs)
-        frame_size: (H, W) frame dimensions (required if using patch inputs)
-    """
     def __init__(self, lpips_weight=0.1, lpips_net='alex', patch_size=None, frame_size=None):
         super().__init__()
         self.mse_loss = MSELoss()
@@ -67,74 +53,55 @@ class CombinedLoss(nn.Module):
         for param in self.lpips_fn.parameters():
             param.requires_grad = False
     
-    def unpatchify_batch(self, patches: torch.Tensor) -> torch.Tensor:
-        """
-        Convert patches to images.
-        Args:
-            patches: (B, T, N, D) where D = C * patch_size * patch_size
-        Returns:
-            images: (B, T, C, H, W)
-        """
+    def unpatchify_batch(self, patches: torch.Tensor) -> torch.Tensor:  # FIXED INDENTATION
+        """Direct einops unpatchify - FIXED VERSION"""
         B, T, N, D = patches.shape
+        H, W = self.frame_size
+        ps = self.patch_size
+        C = 3
+        num_h = H // ps
+        num_w = W // ps
         
-        # Reshape to (B*T, N, D)
-        patches_flat = patches.reshape(B * T, N, D)
-        
-        # Unpatchify each frame
-        frames = self.patchifier.unpatchify(
-            patches_flat,
-            frame_size=self.frame_size,
-            patch_size=self.patch_size
-        )  # (B*T, C, H, W)
-        
-        # Reshape back to (B, T, C, H, W)
-        C, H, W = frames.shape[1:]
-        images = frames.reshape(B, T, C, H, W)
+        images = rearrange(
+            patches,
+            "b t (nh nw) (c ph pw) -> b t c (nh ph) (nw pw)",
+            nh=num_h, nw=num_w, c=C, ph=ps, pw=ps
+        )
         
         return images
-    
-    def forward(self, recon: torch.Tensor, target: torch.Tensor, mask: torch.Tensor = None) -> tuple:
+
+    def forward(self, recon: torch.Tensor, target: torch.Tensor, mask: torch.Tensor = None):
         """
         Args:
-            recon: (B, T, N, D) patches in [0, 1] range
-            target: (B, T, N, D) patches in [0, 1] range
-            mask: Optional (B, T, N) mask (ignored for LPIPS, used for MSE)
-        
-        Returns:
-            tuple: (total_loss, loss_dict)
-                - total_loss: scalar tensor
-                - loss_dict: dict with 'mse', 'lpips', 'total' values
+            recon: (B, T, N, D) patches
+            target: (B, T, N, D) patches
+            mask: Optional (B, T, N) mask
         """
-        # Compute MSE loss on patches (with mask support)
+        # 1. Compute MSE loss on patches
         mse_loss = self.mse_loss(recon, target, mask)
         
-        # Convert patches to images for LPIPS
-        if self.patch_size is not None:
-            recon_images = self.unpatchify_batch(recon)  # (B, T, C, H, W)
-            target_images = self.unpatchify_batch(target)  # (B, T, C, H, W)
-        else:
-            # Already in image format
-            recon_images = recon
-            target_images = target
+        # 2. Ensure patches are in valid [0, 1] range BEFORE unpatchifying
+        recon = torch.sigmoid(recon) if recon.min() < 0 or recon.max() > 1 else recon
+        target = torch.clamp(target, 0, 1)  # Ensure target is valid too
         
-        # Reshape from (B, T, C, H, W) to (B*T, C, H, W) for LPIPS
+        # 3. Convert patches to images for LPIPS
+        recon_images = self.unpatchify_batch(recon)  # (B, T, C, H, W)
+        target_images = self.unpatchify_batch(target)  # (B, T, C, H, W)
+        
+        # 4. Reshape from (B, T, C, H, W) to (B*T, C, H, W) for LPIPS
         B, T, C, H, W = recon_images.shape
         recon_flat = recon_images.reshape(B * T, C, H, W)
         target_flat = target_images.reshape(B * T, C, H, W)
         
-        # Normalize to [-1, 1] for LPIPS
+        # 5. Normalize to [-1, 1] for LPIPS (no clamping needed now)
         recon_normalized = recon_flat * 2 - 1
         target_normalized = target_flat * 2 - 1
         
-        # Clamp to ensure valid range
-        recon_normalized = recon_normalized.clamp(-1, 1)
-        target_normalized = target_normalized.clamp(-1, 1)
-        
-        # Compute LPIPS
-        lpips_values = self.lpips_fn(recon_normalized, target_normalized)  # (B*T, 1, 1, 1)
+        # 6. Compute LPIPS
+        lpips_values = self.lpips_fn(recon_normalized, target_normalized)
         lpips_value = lpips_values.mean()
         
-        # Combined loss
+        # 7. Combined loss
         total_loss = mse_loss + self.lpips_weight * lpips_value
         
         return total_loss, {

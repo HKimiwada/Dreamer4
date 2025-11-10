@@ -1,5 +1,6 @@
 """
-CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. torchrun training_script/train_tokenizer_overfit.py
+CUDA_VISIBLE_DEVICES=5 PYTHONPATH=. torchrun training_script/train_tokenizer_overfit.py
+CUDA_VISIBLE_DEVICES=5 PYTHONPATH=. python training_script/train_tokenizer_overfit.py
 
 Debug list:
 11/05 (v2_overfit): Bounded output range to [0, 1] in CausalTokenizer using sigmoid.
@@ -32,7 +33,7 @@ import numpy as np
 import imageio.v2 as imageio
 
 from tokenizer.tokenizer_dataset import TokenizerDatasetDDP
-from tokenizer.model.encoder_decoder import CausalTokenizer
+from tokenizer.model.encoder_decoder import CausalTokenizer # CausalTokenizer
 from tokenizer.losses import MSELoss
 from tokenizer.patchify_mask import Patchifier
 
@@ -65,13 +66,13 @@ class OverfitConfig:
     num_frames_to_viz = 4  # how many frames to visualize
     
     # Paths
-    ckpt_dir = Path("checkpoints/overfit")
-    viz_dir = Path("visualizations/overfit_mse")
+    ckpt_dir = Path("checkpoints/overfit_perceptual_causal2")
+    viz_dir = Path("visualizations/overfit_perceptual_causal2")
     
     # WandB
     project = "Latest_DreamerV4"
     entity = "hiroki-kimiwada-"
-    run_name = "v1_no_masking_overfit"
+    run_name = "v2_no_masking_overfit"
 
 # ---------------------------------------------------------------------------
 def save_best_checkpoint(model, optimizer, epoch, loss, cfg, best_loss):

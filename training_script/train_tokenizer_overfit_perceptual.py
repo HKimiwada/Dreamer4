@@ -1,7 +1,11 @@
 """
 Testing Perceptual Loss (LPIPS: 0.2 weight)
-PYTHONPATH=. torchrun --nproc_per_node=1 training_script/train_tokenizer_overfit_perceptual.py
-CUDA_VISIBLE_DEVICES=2 PYTHONPATH=. python training_script/train_tokenizer_overfit_perceptual.py 
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH=. python training_script/train_tokenizer_overfit_perceptual.py : LPIPS weight 0.2, Masking(0.0, 0.0)
+CUDA_VISIBLE_DEVICES=4 PYTHONPATH=. python training_script/train_tokenizer_overfit_perceptual.py : LPIPS weight 0.2, Masking(0.2, 0.5)
+CUDA_VISIBLE_DEVICES=6 PYTHONPATH=. python training_script/train_tokenizer_overfit_perceptual.py : LPIPS weight 0.2, Masking(0.5, 0.8)
+CUDA_VISIBLE_DEVICES=2 PYTHONPATH=. python training_script/train_tokenizer_overfit_perceptual.py : LPIPS weight 0.2, Masking(0.0, 0.0)
+
+CUDA_VISIBLE_DEVICES=1 PYTHONPATH=. python training_script/train_tokenizer_overfit_perceptual.py
 """
 import os
 from pathlib import Path
@@ -14,7 +18,7 @@ import numpy as np
 import imageio.v2 as imageio
 
 from tokenizer.tokenizer_dataset import TokenizerDatasetDDP
-from tokenizer.model.encoder_decoder import CausalTokenizer
+from tokenizer.model.encoder_decoder import CausalTokenizer2
 from tokenizer.losses import MSELoss, CombinedLoss
 from tokenizer.patchify_mask import Patchifier
 
@@ -32,14 +36,14 @@ class OverfitConfig:
     embed_dim = 512
     latent_dim = 384
     num_heads = 8
-    num_layers = 12
+    num_layers = 18
     
     # Training
     batch_size = 1
     num_workers = 0  # 0 for overfitting (simpler debugging)
     lr = 1e-4  # higher LR for faster overfitting
     weight_decay = 0.0  # no regularization when overfitting
-    max_epochs = 500
+    max_epochs = 1500
     log_interval = 5
     
     # Visualization
@@ -47,18 +51,18 @@ class OverfitConfig:
     num_frames_to_viz = 4  # how many frames to visualize
     
     # Loss configuration
-    use_combined_loss = True  # Set to False to use MSE only
+    use_combined_loss = False  # Set to False to use MSE only
     lpips_weight = 0.2  # Weight for LPIPS (as in Dreamer4 paper)
     lpips_net = 'alex'  # 'alex', 'vgg', or 'squeeze'
 
     # Paths
-    ckpt_dir = Path("checkpoints/overfit")
-    viz_dir = Path("visualizations/overfit_perceptual_loss_v1")
+    ckpt_dir = Path("checkpoints/overfit/v5_overfit_mse")
+    viz_dir = Path("visualizations/v5_overfit_mse")
     
     # WandB
-    project = "Latest_DreamerV4"
+    project = "11_09_Test_LPIPS_Masking"
     entity = "hiroki-kimiwada-"
-    run_name = "v1_combined_loss_overfit"  # Updated run name
+    run_name = "v5_run"  # Updated run name
 
 # ---------------------------------------------------------------------------
 def save_best_checkpoint(model, optimizer, epoch, loss, cfg, best_loss):
@@ -212,10 +216,10 @@ def visualize_reconstruction(model, batch, cfg, epoch, device):
         final_img = np.concatenate(images, axis=0)
         
         # Save to disk
-        viz_path = cfg.viz_dir / f"epoch{epoch:03d}.png"
-        imageio.imwrite(viz_path, final_img)
-        print(f"\n[Visualization] Saved → {viz_path}")
-        print("="*60 + "\n")
+        # viz_path = cfg.viz_dir / f"epoch{epoch:03d}.png"
+        # imageio.imwrite(viz_path, final_img)
+        # print(f"\n[Visualization] Saved → {viz_path}")
+        # print("="*60 + "\n")
         
         # Log to wandb
         wandb.log({
@@ -277,7 +281,7 @@ def main():
     )
     
     # --- model ---
-    model = CausalTokenizer(
+    model = CausalTokenizer2(
         input_dim=cfg.input_dim,
         embed_dim=cfg.embed_dim,
         num_heads=cfg.num_heads,
@@ -401,7 +405,7 @@ def main():
         wandb.log(log_dict)
         
         # --- save checkpoint if improved ---
-        # best_loss = save_best_checkpoint(model, optimizer, epoch, avg_epoch_loss, cfg, best_loss)
+        #best_loss = save_best_checkpoint(model, optimizer, epoch, avg_epoch_loss, cfg, best_loss)
         
         # --- visualize reconstruction ---
         if epoch % cfg.visualize_interval == 0:
