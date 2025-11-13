@@ -42,7 +42,6 @@ class LPIPSLoss(nn.Module):
     def __init__(self, lpips_net='alex', patch_size=None, frame_size=None):
         super(LPIPSLoss, self).__init__()
         self.lpips_fn = lpips.LPIPS(net=lpips_net).eval()
-        self.lpips_weight = lpips_weight
         
         # For unpatchifying
         self.patch_size = patch_size
