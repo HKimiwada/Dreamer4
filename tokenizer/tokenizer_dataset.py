@@ -7,11 +7,14 @@ and Stage C (Patchifier + MaskGenerator) into a single iterable that yields trai
 from typing import Iterator, Dict, Any, Optional
 from pathlib import Path
 import torch
+import shutil
+import tempfile
 
 from tokenizer.dataset import VideoLoader          # Stage A
 from tokenizer.temporal_slicer import TemporalSlicer  # Stage B
 from tokenizer.patchify_mask import Patchifier     # Stage C (your Patchifier)
 from tokenizer.patchify_mask import MaskGenerator        # Stage C (mask only)
+from torch.utils.data import Dataset
 
 class TokenizerDataset:
     def __init__(
@@ -77,14 +80,95 @@ class TokenizerDataset:
                 },
             }
 
-from typing import Dict, Any, Optional
-from pathlib import Path
-import torch
-from torch.utils.data import Dataset
+class TokenizerDatasetWM:
+    """
+    Version of TokenizerDataset that loads **exactly one video file**.
 
-from tokenizer.dataset import VideoLoader
-from tokenizer.temporal_slicer import TemporalSlicer
-from tokenizer.patchify_mask import Patchifier, MaskGenerator
+    Internally creates a temporary directory and copies the video into it,
+    because VideoLoader only accepts `video_dir` and loads all *.mp4 in that directory.
+    """
+
+    def __init__(
+        self,
+        video_file: Path,
+        target_fps: float = 20.0,
+        resize=(384, 640),
+        max_frames_loader: Optional[int] = None,
+        clip_length: int = 8,
+        stride: Optional[int] = None,
+        mode: str = "sequential",
+        drop_last: bool = False,
+        patch_size: int = 16,
+        mask_prob_range=(0.0, 0.0),
+        per_frame_mask_sampling: bool = False,
+        device: Optional[torch.device] = None,
+    ):
+        video_file = Path(video_file)
+        assert video_file.exists(), f"Video file not found: {video_file}"
+
+        # ---------------------------------------------------------
+        # 🔥 Create a temporary folder containing ONLY this video
+        # ---------------------------------------------------------
+        self.temp_dir = Path(tempfile.mkdtemp(prefix="tokds_"))
+        self.single_video_path = self.temp_dir / video_file.name
+        shutil.copy(video_file, self.single_video_path)
+
+        # ---------------------------------------------------------
+        # Load using the existing VideoLoader(video_dir=...)
+        # ---------------------------------------------------------
+        self.loader = VideoLoader(
+            video_dir=self.temp_dir,
+            target_fps=target_fps,
+            resize=resize,
+            max_frames=max_frames_loader,
+        )
+
+        self.slicer = TemporalSlicer(
+            self.loader,
+            clip_length=clip_length,
+            stride=stride,
+            mode=mode,
+            drop_last=drop_last,
+        )
+
+        self.patchifier = Patchifier(patch_size=patch_size)
+        self.masker = MaskGenerator(
+            mask_prob_range=mask_prob_range,
+            per_frame_sampling=per_frame_mask_sampling
+        )
+
+        self.device = device if device is not None else torch.device("cpu")
+
+        H, W = resize
+        assert H % patch_size == 0 and W % patch_size == 0
+        self.num_patches_per_frame = (H // patch_size) * (W // patch_size)
+        self.frame_size = (H, W)
+
+        print(f"[TokenizerDatasetWM] Using temp dir {self.temp_dir}")
+        print(f"[TokenizerDatasetWM] Single video: {self.single_video_path}")
+
+    def __iter__(self):
+        for sample in self.slicer.generate_all():
+            frames = sample["frames"].to(self.device)
+            meta = sample["metadata"]
+
+            patches = self.patchifier(frames)
+            T, N, D = patches.shape
+            assert N == self.num_patches_per_frame
+
+            mask = self.masker(T=T, N=N, device=self.device)
+
+            yield {
+                "patch_tokens": patches,
+                "mask": mask,
+                "meta": {
+                    **meta,
+                    "T": T,
+                    "N": N,
+                    "D": D,
+                    "frame_size": self.frame_size,
+                },
+            }
 
 class TokenizerDatasetDDP(Dataset):
     """
