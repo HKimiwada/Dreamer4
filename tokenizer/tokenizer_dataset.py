@@ -41,6 +41,9 @@ class TokenizerDataset:
         self.num_patches_per_frame = (H // patch_size) * (W // patch_size)
         self.frame_size = (H, W)
 
+    def __len__(self):
+        return len(self.samples)
+
     def __iter__(self) -> Iterator[Dict[str, Any]]:
         """
         Yields dictionaries with:
