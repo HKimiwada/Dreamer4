@@ -107,7 +107,7 @@ class TokenizerDatasetWM:
         assert video_file.exists(), f"Video file not found: {video_file}"
 
         # ---------------------------------------------------------
-        # 🔥 Create a temporary folder containing ONLY this video
+        # Create a temporary folder containing ONLY this video
         # ---------------------------------------------------------
         self.temp_dir = Path(tempfile.mkdtemp(prefix="tokds_"))
         self.single_video_path = self.temp_dir / video_file.name
