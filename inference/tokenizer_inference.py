@@ -6,14 +6,14 @@ from pathlib import Path
 
 from tokenizer.model.encoder_decoder import CausalTokenizer2
 from tokenizer.patchify_mask import Patchifier
-from tokenizer.tokenizer_dataset import TokenizerDataset
+from tokenizer.tokenizer_dataset import TokenizerDatasetWM
 
 # ----------------------------------------------------------------------------
 class InferenceConfig:
-    video_file = "cheeky-cornflower-setter-0a5ba522405b-20220422-133010.mp4"
+    video_file = "cheeky-cornflower-setter-02e496ce4abb-20220421-092639.mp4"
 
     data_dir = Path("data")
-    ckpt_path = Path("checkpoints/overfit/complete_overfit_mse/best_model.pt")
+    ckpt_path = Path("checkpoints/overfit/latest_complete_overfit_mse/best_model.pt")
 
     # Model / dataset params (must match training)
     resize = (256, 448)
@@ -23,11 +23,11 @@ class InferenceConfig:
     embed_dim = 512
     latent_dim = 256
     num_heads = 16
-    num_layers = 18
+    num_layers = 20
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Output
-    out_video = "inference/results/reconstructed_output.mp4"
+    out_video = "inference/results/v2_reconstructed_output.mp4"
     fps = 30
 
 # ----------------------------------------------------------------------------
@@ -56,8 +56,8 @@ def load_model(cfg):
 def load_video_dataset(cfg):
     print(f"[Dataset] Loading: {cfg.video_file}")
 
-    dataset = TokenizerDataset(
-        video_dir=cfg.data_dir,
+    dataset = TokenizerDatasetWM(
+        video_file=cfg.data_dir / cfg.video_file,
         target_fps=20.0,
         resize=cfg.resize,
         clip_length=cfg.clip_length,
