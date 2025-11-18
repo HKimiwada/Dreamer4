@@ -14,7 +14,7 @@ class DataBuilderWM():
     """
     def __init__(
         self,
-        d_model: int = 256, # Set equal to the dimensions of the latent token for simplicity
+        d_model: int,
         latent_dir: str = "data/latent_sequences",
         action_jsonl: str = "data/actions.jsonl",
         register_tokens: int = 8, # small learned vectors that help the transformer aggregate information. (Like a scratch pad of sorts)
@@ -28,7 +28,11 @@ class DataBuilderWM():
 
         self.register_embed = nn.Embedding(register_tokens, d_model)
         self.k_max = k_max 
-        self.K = 2 ** self.k_max
+        K = 2 ** self.k_max
+        i = np.random.randint(0, k_max + 1)
+        self.step_size = 2 ** i / K
+        self.tau_values = [n * self.step_size for n in range(int(1/self.step_size)+ 1)] # Build list of potential tau grid
+        self.tau_t = random.choice(self.tau_values)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     def forward(self):
@@ -40,11 +44,6 @@ class DataBuilderWM():
         )
         tokenizer = ActionTokenizer(self.d_model).to(self.device)
         for i in range(len(dataset)):
-            i = np.random.randint(0, self.k_max + 1)
-            step_size = 2 ** i / self.K
-            tau_values = [n * self.step_size for n in range(int(1/self.step_size)+ 1)] # Build list of potential tau grid
-            tau_t = random.choice(tau_values)
-            
             sample = dataset[i]
             lat = sample["latents"]
             act = sample["actions"]
