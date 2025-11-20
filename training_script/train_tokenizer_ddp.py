@@ -57,9 +57,9 @@ class OverfitConfig:
     viz_dir = Path("visualizations/latest_complete_overfit_mse")
     
     # WandB
-    project = "Complete_Tokenizer_Overfit"
+    project = "test"
     entity = "hiroki-kimiwada-"
-    run_name = "latest_mse_ddp"
+    run_name = "test"
 
 # ---------------------------------------------------------------------------
 def setup_ddp():

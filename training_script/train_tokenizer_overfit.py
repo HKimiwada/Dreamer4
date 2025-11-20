@@ -34,7 +34,7 @@ from tokenizer.patchify_mask import Patchifier
 # ---------------------------------------------------------------------------
 class OverfitConfig:
     # Target video
-    target_video = "cheeky-cornflower-setter-0a5ba522405b-20220422-133010.mp4"
+    target_video = "v1_video.mp4"
     data_dir = Path("data")
     
     # Model architecture
@@ -52,7 +52,7 @@ class OverfitConfig:
     num_workers = 0  # 0 for overfitting (simpler debugging)
     lr = 3e-4  # higher LR for faster overfitting
     weight_decay = 0.0  # no regularization when overfitting
-    max_epochs = 20
+    max_epochs = 50
     log_interval = 5
     
     # Visualization
@@ -69,9 +69,9 @@ class OverfitConfig:
     viz_dir = Path("visualizations/v2_complete_overfit_mse")
     
     # WandB
-    project = "Complete_Tokenizer_Overfit"
+    project = "test"
     entity = "hiroki-kimiwada-"
-    run_name = "v2_mse"  # Lowered standard deviation for positional encoding.
+    run_name = "test"  # Lowered standard deviation for positional encoding.
 
 
 # ---------------------------------------------------------------------------

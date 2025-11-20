@@ -80,7 +80,7 @@ class CausalTokenizer(nn.Module):
         encoder_blocks = []
         for i in range(num_layers):
             causal_time = (i % 4 == 3)
-            encoder_blocks.append(BlockCausalTransformer2(embed_dim, num_heads, causal_time))
+            encoder_blocks.append(BlockCausalTransformer(embed_dim, num_heads, causal_time))
         self.encoder = nn.ModuleList(encoder_blocks)
 
         # --- Latent bottleneck ---
@@ -94,7 +94,7 @@ class CausalTokenizer(nn.Module):
         decoder_blocks = []
         for i in range(num_layers):
             causal_time = (i % 4 == 3)
-            decoder_blocks.append(BlockCausalTransformer2(embed_dim, num_heads, causal_time))
+            decoder_blocks.append(BlockCausalTransformer(embed_dim, num_heads, causal_time))
         self.decoder = nn.ModuleList(decoder_blocks)
 
         self.output_proj = nn.Linear(embed_dim, input_dim)
