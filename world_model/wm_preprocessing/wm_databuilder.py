@@ -154,7 +154,6 @@ class DataBuilderWM(nn.Module):
 
         return out
 
-
 def main():
     dataset = WorldModelDataset(
         latent_dir="data/latent_sequences",
@@ -173,6 +172,8 @@ def main():
     input_wm = data_builder(lat, act)
     print("Input to World Model:\n")
     print(input_wm)
+    print("Shape of Input to WM:\n")
+    print(input_wm["wm_input_tokens"].shape)
 
 if __name__ == "__main__":
     main()
