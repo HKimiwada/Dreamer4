@@ -32,9 +32,13 @@ def flow_loss_v1(pred_z_clean, z_clean, tau):
     diff = pred_z_clean - z_clean         # (B, T, N_latents, D_latent)
     sq_error = diff.pow(2)
 
-    # 3. Ramp weighting based on tau
+    # 3. Ramp weighting based on tau (used for large scale training tasks to stabilize training)
     # tau: (B,T) → expand to (B,T,1,1)
-    w = (0.1 + 0.9 * tau).unsqueeze(-1).unsqueeze(-1)
+    # w = (0.1 + 0.9 * tau).unsqueeze(-1).unsqueeze(-1)
+
+    # 3. Uniform weighting to force generation learning (for overfitting on small frames)
+    print("Using uniform weighting for flow loss.\n")
+    w = torch.ones_like(tau).unsqueeze(-1).unsqueeze(-1)
 
     weighted_error = w * sq_error
 
