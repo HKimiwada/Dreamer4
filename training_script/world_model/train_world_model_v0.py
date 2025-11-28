@@ -18,7 +18,8 @@ PATCH_SIZE = 16
 RESIZE = (256, 448)
 
 class TokenizerConfig:
-    ckpt_path = Path("checkpoints/overfit/latest_complete_overfit_mse/best_model.pt")
+    # ckpt_path = Path("checkpoints/overfit/latest_complete_overfit_mse/best_model.pt")
+    ckpt_path = Path("checkpoints/tokenizer/complete_overfit_mse/v1_weights.pt")
 
     # Model / dataset params (must match training)
     resize = RESIZE
@@ -28,7 +29,7 @@ class TokenizerConfig:
     embed_dim = 512
     latent_dim = 256
     num_heads = 16
-    num_layers = 20
+    num_layers = 18
     visualize_interval = 10
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
