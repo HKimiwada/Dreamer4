@@ -86,42 +86,102 @@ def decode_latents(tokenizer, latents):
 
 @torch.no_grad()
 def visualize_world_model(world_model, data_builder, sample, tokenizer, step, device, num_frames=4):
-
     world_model.eval()
 
+    # 1. Prepare Ground Truth
     latents = sample["latents"]      # (B, T, N, D)
     actions = sample["actions"]
+    
+    B, T_seq, N_latents, D_latent = latents.shape
 
-    # Build WM input
-    wm_input = data_builder(latents, actions)
-    pred_z = world_model(wm_input)        # (B, T, N, D)
-    z_clean = wm_input["z_clean"]         # (B, T, N, D)
+    # 2. Initialize Autoregressive Canvas
+    # Start with pure noise for the entire sequence. We will fill this in frame-by-frame.
+    z_current = torch.randn_like(latents)
+    
+    # Initialize metadata: 
+    # tau=0 (Generation) for future frames
+    # tau=1 (Context) for past frames (updated in loop)
+    tau_map = torch.zeros(B, T_seq, device=device)
+    d_map = torch.ones(B, T_seq, device=device) # Predict full step (d=1)
 
-    # [FIX] Remove batch dimension if present to iterate over time
-    if pred_z.ndim == 4:
-        pred_z = pred_z[0]      # (T, N, D)
-        z_clean = z_clean[0]    # (T, N, D)
+    pred_frames = []
+    
+    # 3. Autoregressive Rollout Loop
+    # We generate Frame t using the history of Frames 0...t-1
+    for t in range(T_seq):
+        
+        # --- A. Construct Inputs for Step t ---
+        # Get base tokens (Actions, Registers) from data_builder
+        # (We use the structure it creates, then overwrite the dynamic parts)
+        wm_inp = data_builder(latents, actions)
+        
+        # Reshape flat tokens to (B, T, L_total, D) for editing
+        wm_tokens = wm_inp["wm_input_tokens"]
+        L_total = wm_tokens.shape[1] // T_seq
+        wm_tokens = wm_tokens.view(B, T_seq, L_total, -1)
+        
+        # OVERWRITE 1: Latents (first N tokens)
+        # We replace the ground truth with our current canvas (Mixed Noise + Predictions)
+        z_current_proj = data_builder.latent_project(z_current)
+        wm_tokens[:, :, :N_latents, :] = z_current_proj
+        
+        # OVERWRITE 2: Shortcut Token (last 1 token)
+        # We manually build the token to tell the model: "Past is clean (tau=1), Current is noise (tau=0)"
+        feat = torch.stack([tau_map, d_map], dim=-1) # (B, T, 2)
+        shortcut_embed = data_builder.shortcut_mlp(feat) + data_builder.shortcut_slot.view(1, 1, -1)
+        wm_tokens[:, :, -1:, :] = shortcut_embed.unsqueeze(2)
+        
+        # Flatten back for Transformer
+        wm_inp["wm_input_tokens"] = wm_tokens.view(B, T_seq * L_total, -1)
+        # Update metadata (optional, purely for consistency)
+        wm_inp["tau"] = tau_map 
 
-    # Select indices
-    T = pred_z.shape[0]
-    idxs = np.linspace(0, T - 1, num_frames, dtype=int)
+        # --- B. Forward Pass ---
+        # Predict all frames (Transformer handles causal masking)
+        # We only care about the prediction for the current frame 't'
+        preds = world_model(wm_inp) # (B, T, N, D)
+        pred_t = preds[:, t]        # (B, N, D)
+        
+        pred_frames.append(pred_t)
+        
+        # --- C. Update State for Next Step ---
+        if t < T_seq - 1:
+            # Update Canvas: Feed this prediction back as "History" for the next step
+            z_current[:, t] = pred_t
+            # Update Conditioning: Mark this frame as "Context" (tau=1) so model attends to it
+            tau_map[:, t] = 1.0 
 
+    # 4. Decode and Visualization
+    # Stack predictions along time dimension
+    pred_z = torch.stack(pred_frames, dim=1) # (B, T, N, D)
+    z_clean = latents
+
+    # Remove batch dim if B=1 for easier slicing
+    if B == 1:
+        pred_z = pred_z[0]
+        z_clean = z_clean[0]
+
+    # Select frames to visualize
+    idxs = np.linspace(0, T_seq - 1, num_frames, dtype=int)
     rows = []
-    for t in idxs:
-        # Slice to keep (1, N, D) shape for decode_latents
-        pred = decode_latents(tokenizer, pred_z[t:t+1])
-        gt   = decode_latents(tokenizer, z_clean[t:t+1])
+    
+    for t_idx in idxs:
+        # Decode Ground Truth
+        gt_img = decode_latents(tokenizer, z_clean[t_idx:t_idx+1])
+        # Decode Prediction
+        pred_img = decode_latents(tokenizer, pred_z[t_idx:t_idx+1])
 
-        pred_np = (pred[0].permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)
-        gt_np   = (gt[0].permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)
+        # Convert to Numpy Image
+        gt_np = (gt_img[0].permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)
+        pred_np = (pred_img[0].permute(1,2,0).cpu().numpy() * 255).astype(np.uint8)
 
-        combined = np.concatenate([gt_np, pred_np], axis=1)   # GT | PRED
-        rows.append(combined)
+        # Concatenate: [GT | Prediction]
+        rows.append(np.concatenate([gt_np, pred_np], axis=1))
 
     final_img = np.concatenate(rows, axis=0)
-
-    wandb.log({"wm_reconstruction": wandb.Image(final_img, caption=f"Step {step}")})
-
+    
+    wandb.log({"wm_reconstruction": wandb.Image(final_img, caption=f"Step {step} (AR)")})
+    
     world_model.train()
 
 def train_overfit():
@@ -181,7 +241,7 @@ def train_overfit():
     print("data_builder: training start")
     data_builder.train()
 
-    for step in range(1000): # Increased steps to ensure we see visualization
+    for step in range(10000): # Increased steps to ensure we see visualization
         for sample in loader:
 
             latents = sample["latents"]       
