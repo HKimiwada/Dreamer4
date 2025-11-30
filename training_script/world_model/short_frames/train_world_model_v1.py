@@ -1,3 +1,5 @@
+# Training script v1 (v0 + but w/batch decoding for visualization)
+# python training_script/world_model/short_frames/train_world_model_v1.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -6,7 +8,6 @@ import numpy as np
 from pathlib import Path
 from torch.utils.data import DataLoader
 
-# Imports from your codebase
 from tokenizer.model.encoder_decoder import CausalTokenizer
 from tokenizer.patchify_mask import Patchifier
 from world_model.wm_preprocessing.wm_dataset import WorldModelDataset

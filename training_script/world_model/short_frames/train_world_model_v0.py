@@ -1,5 +1,5 @@
 # Training script v0 (most simple with basic flow-matching)
-# python training_script/world_model/train_world_model_v0.py
+# python training_script/world_model/short_frames/train_world_model_v0.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
