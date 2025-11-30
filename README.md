@@ -5,6 +5,7 @@ Trained on 8x 16GB V100 GPUs using data from zhwang4ai/OpenAI-Minecraft-Contract
 ## Key Differences from original paper:
 - Uses MSE loss only when training tokenizer (no dynamic LPIPS integration as of yet)
 - Tokenizer/World Model/Imagination Training etc... all overfit on one video to prove the pipeline works on limited compute resources.
+- Due to limited computing resources, tokenizer and world model outputs are grainy than ideal reconstructions.
 
 ## Results
 ### Tokenizer Performance
