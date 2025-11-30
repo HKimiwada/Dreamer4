@@ -27,7 +27,7 @@ class InferenceConfig:
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Output
-    out_video = "inference/results/v2_reconstructed_output.mp4"
+    out_video = "inference/results/tokenizer/v2_reconstructed_output.mp4"
     fps = 30
 
 # ----------------------------------------------------------------------------

@@ -1,0 +1,1 @@
+# Inference script for World Model (for WM trained via train_world_model_v4.py)
