@@ -18,3 +18,12 @@ Example #2: Reconstruction from Tokenizer <br>
 https://github.com/user-attachments/assets/a3cd04e5-7409-4a6f-b1fb-259e335cf879
 
 ### World Model Performance
+Single-step inference (shows that overfitting worked)
+
+https://github.com/user-attachments/assets/a0e15de8-39d4-41ea-8426-853545e1a711
+
+Multi-step inference (simulates actual world model performance)
+
+https://github.com/user-attachments/assets/ac0abd4c-5e62-4d06-b088-df7cd9373bb8
+
+
