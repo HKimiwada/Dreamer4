@@ -9,12 +9,10 @@ import os
 from pathlib import Path
 from tqdm import tqdm
 
-# Import your modules
 from tokenizer.model.encoder_decoder import CausalTokenizer
 from tokenizer.patchify_mask import Patchifier
 from world_model.wm_preprocessing.wm_databuilder import DataBuilderWM
 from world_model.wm.dynamics_model import WorldModel
-# Re-used for easy action loading & encoding logic
 from world_model.wm_preprocessing.wm_dataset import WorldModelDataset, encode_action_components
 
 # --- Configuration ---
@@ -146,7 +144,7 @@ def generate_video_flow_matching(cfg, world_model, data_builder, tokenizer, acti
         tau_map = torch.full((B, T), t_curr.item(), device=device)
         d_map   = torch.full((B,), 0.0, device=device) 
         
-        # --- CHUNKED FORWARD PASS ---
+        # Chucked Forward Pass
         # Instead of passing all 600 frames at once, we pass small chunks
         pred_chunks = []
         
@@ -187,7 +185,7 @@ def generate_video_flow_matching(cfg, world_model, data_builder, tokenizer, acti
             }
             
             # Run Model on Chunk
-            # CRITICAL: Pass time_offset=t_start so positional embeddings are correct!
+            # Pass time_offset=t_start so positional embeddings are correct!
             pred_chunk = world_model(wm_input_dict, time_offset=t_start)
             pred_chunks.append(pred_chunk)
             
@@ -241,7 +239,7 @@ def main():
         # Ensure we don't request more actions than available
         available_actions = len(temp_dataset.actions)
         if available_actions < cfg.clip_length:
-            print(f"⚠️ Warning: Requested {cfg.clip_length} frames but only {available_actions} actions found.")
+            print(f"Warning: Requested {cfg.clip_length} frames but only {available_actions} actions found.")
             cfg.clip_length = available_actions
             
         clip_actions = temp_dataset.actions[:cfg.clip_length]
@@ -261,7 +259,7 @@ def main():
                 raw_actions[k] = torch.stack(v).unsqueeze(0)
     
     if not raw_actions:
-        print("⚠️  Warning: Could not parse actions automatically. Using zero-actions.")
+        print("Warning: Could not parse actions automatically. Using zero-actions.")
         T = cfg.clip_length
         raw_actions = {
             "mouse_cat": torch.zeros(1, T, dtype=torch.long),

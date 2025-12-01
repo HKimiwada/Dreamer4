@@ -20,7 +20,6 @@ PATCH_SIZE = 16
 RESIZE = (256, 448)
 
 class TokenizerConfig:
-    # Path to your best tokenizer checkpoint
     ckpt_path = Path("checkpoints/tokenizer/complete_overfit_mse/v1_weights.pt")
 
     # Model / dataset params (must match tokenizer training)
@@ -47,7 +46,7 @@ def load_tokenizer(cfg):
     )
 
     if not cfg.ckpt_path.exists():
-        print(f"⚠️ Warning: Checkpoint {cfg.ckpt_path} not found. Visualization will be random.")
+        print(f"Warning: Checkpoint {cfg.ckpt_path} not found. Visualization will be random.")
         model.to(cfg.device)
         return model
 

@@ -48,7 +48,7 @@ def load_tokenizer(cfg):
     )
 
     if not cfg.ckpt_path.exists():
-        print(f"⚠️ Warning: Checkpoint {cfg.ckpt_path} not found. Visualization will be random.")
+        print(f"Warning: Checkpoint {cfg.ckpt_path} not found. Visualization will be random.")
         model.to(cfg.device)
         return model
 
@@ -213,9 +213,7 @@ def train_overfit():
     print(f"Original dataset size: {len(dataset)}")
     dataset.latent_files = dataset.latent_files[:1] 
     
-    # FIX: Ensure actions align with latents. 
-    # Assumption: dataset.actions is a list of frames or sequences. 
-    # If it's a list of video objects, slice to [:1]. If it's frames, [:600] is likely correct.
+    # Ensure actions align with latents. 
     dataset.actions = dataset.actions[:cfg.clip_length] 
     print(f"Overfitting dataset size: {len(dataset)}")
     
@@ -293,7 +291,7 @@ def train_overfit():
             # Get total sequence length (e.g., 600)
             T_full = full_latents.shape[1] 
             
-            # --- SLIDING WINDOW LOOP ---
+            # Sliding Window Training
             # Iterate through the video in overlapping chunks
             for start_idx in range(0, T_full - WINDOW_SIZE + 1, STRIDE):
                 end_idx = start_idx + WINDOW_SIZE

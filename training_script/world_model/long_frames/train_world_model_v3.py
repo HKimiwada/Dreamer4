@@ -21,7 +21,6 @@ PATCH_SIZE = 16
 RESIZE = (256, 448)
 
 class TokenizerConfig:
-    # Path to your best tokenizer checkpoint
     ckpt_path = Path("checkpoints/tokenizer/complete_overfit_mse/v1_weights.pt")
 
     # Model / dataset params (must match tokenizer training)
@@ -48,7 +47,7 @@ def load_tokenizer(cfg):
     )
 
     if not cfg.ckpt_path.exists():
-        print(f"⚠️ Warning: Checkpoint {cfg.ckpt_path} not found. Visualization will be random.")
+        print(f"Warning: Checkpoint {cfg.ckpt_path} not found. Visualization will be random.")
         model.to(cfg.device)
         return model
 
@@ -213,7 +212,6 @@ def train_overfit():
     print(f"Original dataset size: {len(dataset)}")
     dataset.latent_files = dataset.latent_files[:1] 
     
-    # FIX 1: Use 'cfg.clip_length', NOT 'self.cfg.clip_length'
     dataset.actions = dataset.actions[:cfg.clip_length] 
     print(f"Overfitting dataset size: {len(dataset)}")
     
@@ -287,7 +285,7 @@ def train_overfit():
             # Get total sequence length (e.g., 600)
             T_full = full_latents.shape[1] 
             
-            # --- SLIDING WINDOW LOOP ---
+            # Sliding Window Training
             # Iterate through the video in overlapping chunks
             # e.g. [0-32], [16-48], [32-64] ...
             for start_idx in range(0, T_full - WINDOW_SIZE + 1, STRIDE):

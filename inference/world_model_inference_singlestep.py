@@ -80,15 +80,13 @@ def decode_latents(tokenizer, latents, size=(256, 448)):
 @torch.no_grad()
 def generate_one_step_denoise(cfg, world_model, data_builder, tokenizer, actions):
     """
-    ONE-STEP PREDICTION (Like WandB).
+    One-step prediction.
     Takes ground truth, adds 50% noise, and asks model to remove it in ONE step.
     Does NOT use ODE loop.
     """
     B = 1 
     T = cfg.clip_length
     device = cfg.device
-    
-    print(f"\n--- ONE-STEP DENOISING MODE (Like WandB) ---")
     
     # 1. Load Ground Truth
     print("Loading ground truth latents...")

@@ -81,7 +81,7 @@ def reconstruct_video(model, dataset, cfg):
 
     print(f"[Reconstruct] Starting inference...")
 
-    # Iterate over ALL sequential clips
+    # Iterate over all sequential clips
     for sample in dataset:
         patches = sample["patch_tokens"].unsqueeze(0).to(cfg.device)
         mask = sample["mask"].unsqueeze(0).to(cfg.device)
