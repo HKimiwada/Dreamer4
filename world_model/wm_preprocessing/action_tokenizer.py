@@ -17,7 +17,6 @@ class ActionTokenizer(nn.Module):
         yaw_pitch: (B, T, 2) float
         gui:       (B, T, 2) float
         hotbar:    (B, T) long
-
     OUTPUT:
         action_tokens: (B, T, Sa=4, D_model) # 3D if input not batched. 
     """
