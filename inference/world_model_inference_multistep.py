@@ -1,5 +1,5 @@
 # Inference script for World Model (for WM trained via train_world_model_v4.py)
-# CUDA_VISIBLE_DEVICES=3 python inference/world_model_inference.py
+# CUDA_VISIBLE_DEVICES=3 python inference/world_model_inference_multistep.py
 import torch
 import torch.nn as nn
 import numpy as np
