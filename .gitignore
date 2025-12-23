@@ -6,4 +6,6 @@ wandb/
 checkpoints/
 logs/
 visualizations/
-imagination_training/mineworld
+imagination_training/wm/._____temp
+imagination_training/wm/AI-ModelScope/mineworld
+
