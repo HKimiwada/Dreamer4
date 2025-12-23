@@ -8,5 +8,6 @@ logs/
 visualizations/
 imagination_training/wm/._____temp
 imagination_training/wm/AI-ModelScope/
+imagination_training/wm/700M_16f.ckpt
 
 
