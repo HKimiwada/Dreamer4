@@ -1,8 +1,9 @@
 import torch
 import json
 import gymnasium as gym
+import ale_py
 from pathlib import Path
-from envs.atari_preprocessing import AtariPreprocessing
+from atari_preprocessing import AtariPreprocessing
 
 def make_simple_env(game_id="BreakoutNoFrameskip-v4", size=64):
     env = gym.make(game_id, render_mode="rgb_array", frameskip=1)
