@@ -29,7 +29,7 @@ class AtariConfig:
     num_layers = 8         
     
     # Training (Scale batch size for 16GB V100)
-    batch_size = 64        # Per-GPU batch size
+    batch_size = 32        # Per-GPU batch size
     num_workers = 4
     lr = 1e-4
     weight_decay = 1e-2
