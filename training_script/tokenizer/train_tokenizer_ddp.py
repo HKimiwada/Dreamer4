@@ -152,7 +152,7 @@ def visualize_reconstruction(model, batch, cfg, epoch, device):
     model.train()
 
 # ---------------------------------------------------------------------------
-def main():
+def overfit_main():
     cfg = OverfitConfig()
     rank, local_rank, world_size = setup_ddp()
     device = torch.device(f"cuda:{local_rank}")
@@ -286,7 +286,6 @@ def main():
         print(f"\n[Training Complete] Best loss: {best_loss:.6f}")
         wandb.finish()
     cleanup_ddp()
-
 
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":

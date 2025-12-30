@@ -17,4 +17,4 @@ def reconstruct_raw_frame(frame_path, output_name="utils/atari/reconstructed_fra
     print(f"Frame saved to {output_name}")
 
 # Example usage
-reconstruct_raw_frame("data/atari/raw/frame_000000.pt")
+reconstruct_raw_frame("data/atari/raw/frame_000100.pt")
