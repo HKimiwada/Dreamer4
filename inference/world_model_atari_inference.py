@@ -9,17 +9,17 @@ from tqdm import tqdm
 from tokenizer.model.encoder_decoder import CausalTokenizer
 from tokenizer.patchify_mask import Patchifier
 from world_model.wm.dynamics_model_atari import WorldModel
-# Note: Use your Atari builder logic from the training script
+# Using the builder logic from your Atari training script
 from training_script.world_model.atari.train_world_model_atari import AtariDataBuilder
 
-# --- Configuration (MUST match your training config) ---
+# --- Configuration (Must match your Atari training config) ---
 class AtariInferenceConfig:
     # Paths
     tokenizer_ckpt = Path("checkpoints/atari/tokenizer_v2/best_model.pt")
     wm_ckpt_path = Path("checkpoints/world_model/atari_v1/best_wm.pt")
     latent_path = Path("data/atari/latent_sequences/video_full_frames.pt")
     actions_jsonl = Path("data/atari/raw/actions.jsonl")
-    output_dir = Path("inference/results/world_model/atari")
+    output_dir = Path("inference/results/atari")
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
@@ -34,8 +34,9 @@ class AtariInferenceConfig:
     Sa = 1                 # Action tokens
     
     # Inference Params
-    num_ode_steps = 10     # Steps for Euler solver (Flow Matching)
-    gen_length = 64        # Number of frames to "dream"
+    num_ode_steps = 50     # Flow Matching Euler steps
+    gen_length = 64        # Sequence length
+    chunk_size = 16        # Small chunks for memory efficiency
     fps = 10
 
 # --- Helper Functions ---
@@ -58,7 +59,6 @@ def load_atari_models(cfg):
     tokenizer.to(cfg.device).eval()
     
     # 2. World Model & Builder
-    # Initialize with training config params
     world_model = WorldModel(
         d_model=cfg.embed_dim,
         d_latent=cfg.latent_dim,
@@ -68,11 +68,10 @@ def load_atari_models(cfg):
         Sr=cfg.Sr,
         use_checkpoint=False 
     )
-    # Mock cfg for builder
     builder = AtariDataBuilder(cfg)
     
     wm_state = torch.load(cfg.wm_ckpt_path, map_location="cpu")
-    # If the checkpoint was saved from DDP, strip 'module.'
+    # Strip DDP 'module.' prefix if needed
     wm_state = {k.replace("module.", ""): v for k, v in wm_state.items()}
     world_model.load_state_dict(wm_state)
     
@@ -82,116 +81,113 @@ def load_atari_models(cfg):
     return tokenizer, world_model, builder
 
 @torch.no_grad()
-def decode_latents_to_video(tokenizer, latents, cfg):
+def decode_latents_chunked(tokenizer, latents, cfg):
     """
-    Decodes (T, N, D) latents to (T, H, W, 3) images in chunks.
-    Matches the training clip_length (4) to avoid pos_embed noise.
+    Decodes (T, N, D) latents to (T, H, W, 3) images.
+    Uses chunking to match tokenizer training temporal window (4 frames).
     """
     T, N, D = latents.shape
     device = latents.device
-    chunk_size = 4 # MUST match tokenizer training clip_length
+    chunk_size = 4 # Match tokenizer training clip_length
     
     all_frames = []
     patchifier = Patchifier(cfg.patch_size)
     
-    # Process in chunks of 4 to match training temporal window
     for t_start in range(0, T, chunk_size):
         t_end = min(t_start + chunk_size, T)
         T_curr = t_end - t_start
         
-        # 1. Prepare Chunk (1, T_curr, N, D)
         z_chunk = latents[t_start:t_end].unsqueeze(0)
         
-        # 2. Latent -> Embeddings
-        x = tokenizer.from_latent(z_chunk) # (1, T_curr, N, E)
+        x = tokenizer.from_latent(z_chunk) 
         x = x.view(1, T_curr * N, tokenizer.embed_dim)
         
-        # 3. Add Positional Embeddings (Same indices 0..255 used in training)
+        # Add Positional Embeddings for current context
         seq_len = T_curr * N
         x = x + tokenizer.pos_embed[:, :seq_len, :]
         
-        # 4. Decoder Stack
         x = tokenizer._run_stack(x, tokenizer.decoder, T=T_curr, N=N)
         
-        # 5. Project to Pixels
         x = x.view(1, T_curr, N, tokenizer.embed_dim)
         patches = tokenizer.output_proj(x)
         
-        # 6. Unpatchify frames in this chunk
         for t in range(T_curr):
             frame = patchifier.unpatchify(patches[0, t:t+1], cfg.resize, cfg.patch_size)[0]
-            # Convert to [0, 255] uint8 HWC
             frame_np = (frame.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
             all_frames.append(frame_np)
             
     return np.array(all_frames)
 
 @torch.no_grad()
-def dream_sequence(cfg, wm, builder, tokenizer):
+def generate_atari_dream(cfg, wm, builder, tokenizer):
     device = cfg.device
     T = cfg.gen_length
     
-    # 1. Load Ground Truth for the SEED frame
-    print("Loading seed frame and actions...")
+    # 1. Load Seed and Actions
+    print("Loading seed and actions...")
     data = torch.load(cfg.latent_path, map_location="cpu")
-    all_latents = data["z"] # [100000, 64, 256]
-    
-    # Start the dream with frame 0 from your dataset
-    seed_z = all_latents[0:1].to(device) # (1, 64, 256)
+    seed_z = data["z"][0:1].to(device) # Use first real frame as seed
     
     actions = []
     with open(cfg.actions_jsonl, "r") as f:
         for i, line in enumerate(f):
             if i >= T: break
             actions.append(json.loads(line)["action"])
-    actions_tensor = torch.tensor(actions, device=device).unsqueeze(0)
+    actions_tensor = torch.tensor(actions, device=device).unsqueeze(0) # (1, T)
 
-    # 2. Initialize sequence: Seed frame + Noise for the rest
-    # z: (1, T, 64, 256)
+    # 2. ODE Initialization
     z = torch.randn(1, T, cfg.n_latents, cfg.latent_dim, device=device)
-    z[:, 0] = seed_z # Set the first frame to ground truth
-
-    # 3. ODE Solver
-    num_steps = 50 # Increased for better quality
-    dt = 1.0 / num_steps
+    z[:, 0] = seed_z 
     
-    for i in tqdm(range(num_steps)):
-        t_val = i / num_steps
-        tau = torch.full((1, T), t_val, device=device)
-        # IMPORTANT: d=0 indicates we are looking for the 'cleanest' prediction
-        d = torch.zeros(1, device=device) 
+    timesteps = torch.linspace(0, 1, cfg.num_ode_steps + 1, device=device)
+    dt = 1.0 / cfg.num_ode_steps
+    
+    # 3. ODE Solver Loop
+    for i in tqdm(range(cfg.num_ode_steps)):
+        t_curr = timesteps[i]
+        tau_map = torch.full((1, T), t_curr.item(), device=device)
+        d_map = torch.zeros(1, device=device)
         
-        # Builder creates tokens including actions, registers, and shortcut(tau, d)
-        tokens = builder(z, actions_tensor, tau, d)
+        pred_chunks = []
+        for t_start in range(0, T, cfg.chunk_size):
+            t_end = min(t_start + cfg.chunk_size, T)
+            curr_len = t_end - t_start
+            
+            z_chunk = z[:, t_start:t_end]
+            tau_chunk = tau_map[:, t_start:t_end]
+            act_chunk = actions_tensor[:, t_start:t_end]
+            
+            # Use Atari Builder logic
+            tokens = builder(z_chunk, act_chunk, tau_chunk, d_map)
+            
+            wm_input = {
+                "wm_input_tokens": tokens,
+                "tau": tau_chunk,
+                "d": d_map
+            }
+            
+            pred_chunk = wm(wm_input, time_offset=t_start)
+            pred_chunks.append(pred_chunk)
+            
+        pred_z_clean = torch.cat(pred_chunks, dim=1)
         
-        # Dynamics model expects the full dict including 'd'
-        input_dict = {
-            "wm_input_tokens": tokens, 
-            "tau": tau,
-            "d": d 
-        }
-        
-        pred_z_clean = wm(input_dict, time_offset=0)
-        
-        # Euler update (Don't update the seed frame)
+        # Euler update (Skipping the seed frame update)
         v_pred = pred_z_clean - z
         z[:, 1:] = z[:, 1:] + (v_pred[:, 1:] * dt)
         
-    print("Decoding dream...")
-    return decode_latents_to_video(tokenizer, z.squeeze(0), cfg)
+    print("Decoding latents...")
+    return decode_latents_chunked(tokenizer, z.squeeze(0), cfg)
 
 def main():
     cfg = AtariInferenceConfig()
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     
     tokenizer, wm, builder = load_atari_models(cfg)
+    video_frames = generate_atari_dream(cfg, wm, builder, tokenizer)
     
-    video_frames = dream_sequence(cfg, wm, builder, tokenizer)
-    
-    save_path = cfg.output_dir / "dream_test.mp4"
+    save_path = cfg.output_dir / "atari_dream_latest.mp4"
     H, W, _ = video_frames[0].shape
     out = cv2.VideoWriter(str(save_path), cv2.VideoWriter_fourcc(*'mp4v'), cfg.fps, (W, H))
-    
     for frame in video_frames:
         out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
     out.release()
