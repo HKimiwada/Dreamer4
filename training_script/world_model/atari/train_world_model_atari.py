@@ -140,81 +140,89 @@ def setup_ddp():
 @torch.no_grad()
 def visualize_step(wm, builder, tokenizer, batch, cfg, step, device):
     """
-    Drop-in replacement for visualize_step.
-    Handles DDP unwrapping and full tokenizer decoding pipeline.
+    Corrected visualization logic for Atari Breakout.
+    Runs the full Decoder pipeline to convert latents to pixels.
     """
-    # 1. Unwrap DDP if necessary
+    # 1. Support both DDP-wrapped and raw models
     wm_eval = wm.module if hasattr(wm, "module") else wm
     builder_eval = builder.module if hasattr(builder, "module") else builder
     
     wm_eval.eval()
     builder_eval.eval()
+    tokenizer.eval()
 
     # 2. Prepare Data
-    latents = batch["latents"].to(device)  # (B, T, N, D)
+    latents = batch["latents"].to(device)  # (B, T, N, D_latent)
     actions = batch["actions"].to(device)  # (B, T)
     start_idx = batch["start_idx"][0].item()
     B, T, N, D = latents.shape
 
-    # 3. Predict latents using the Shortcut Forcing objective (fixed tau=0.5)
+    # 3. Get World Model Prediction (Fixed tau=0.5 for diagnostic consistency)
     tau = torch.full((B, T), 0.5, device=device)
     d = torch.full((B,), 0.25, device=device)
     noise = torch.randn_like(latents)
     z_corr = (1.0 - tau.unsqueeze(-1).unsqueeze(-1)) * noise + tau.unsqueeze(-1).unsqueeze(-1) * latents
 
-    # Build tokens and run World Model
     tokens = builder_eval(z_corr, actions, tau, d)
     pred_z = wm_eval({"wm_input_tokens": tokens, "tau": tau, "d": d, "z_clean": latents, "z_corrupted": z_corr}, 
                      time_offset=start_idx)
 
-    # 4. Internal Helper: Decode latents to pixels using Causal Tokenizer pipeline
-    def decode_to_pixels(z_sequence):
+    # 4. Helper: Decodes latents using the Tokenizer's Transformer Decoder
+    def decode_latents_to_frames(z_sequence):
         """
-        z_sequence: (T_sub, N, D_latent)
+        Processes a sequence of latents through the full tokenizer pipeline.
+        z_sequence shape: (T_sub, N, D_latent)
         """
         T_sub = z_sequence.shape[0]
-        # Reshape for tokenizer: (B=1, T, N, D)
+        # (T, N, D) -> (1, T, N, D) to satisfy tokenizer batch expectations
         z_in = z_sequence.unsqueeze(0)
 
-        # Pipeline: from_latent -> transformer -> output_proj -> unpatchify
-        x = tokenizer.from_latent(z_in) # (1, T, N, E)
+        # Step A: Project to embedding dimension (B, T, N, E)
+        x = tokenizer.from_latent(z_in) 
+        
+        # Step B: Flatten for the transformer blocks
         x = x.view(1, T_sub * N, tokenizer.embed_dim)
         
-        # Run the decoder stack (preserving temporal context)
+        # Step C: Run through the Decoder Transformer blocks
+        # This is essential to recover spatial/temporal structure
         x = tokenizer._run_stack(x, tokenizer.decoder, T=T_sub, N=N)
         
+        # Step D: Project back to pixel space (B, T, N, D_pixel)
         x = x.view(1, T_sub, N, tokenizer.embed_dim)
-        patches = tokenizer.output_proj(x) # (1, T, N, patch_dim)
+        patches = tokenizer.output_proj(x) # Size 192 for 8x8 patches
 
+        # Step E: Reconstruct pixels using Patchifier
         patchifier = Patchifier(cfg.patch_size)
-        # Unpatchify treats the first dim as batch/temporal
-        frames = patchifier.unpatchify(patches.squeeze(0), cfg.resize, cfg.patch_size) 
-        return frames # (T_sub, 3, H, W)
+        frames = []
+        for t in range(T_sub):
+            # unpatchify expects (1, N, D) -> returns (1, C, H, W)
+            f = patchifier.unpatchify(patches[:, t], cfg.resize, cfg.patch_size)
+            frames.append(f[0].clamp(0, 1)) # Ensure range is [0, 1]
+        return torch.stack(frames)
 
-    # Take the first 4 frames of the first batch item
-    gt_frames = decode_to_pixels(latents[0, :4])   # (4, 3, 64, 64)
-    pred_frames = decode_to_pixels(pred_z[0, :4]) # (4, 3, 64, 64)
+    # Visualize the first 4 frames of the sequence
+    gt_frames = decode_latents_to_frames(latents[0, :4])
+    pred_frames = decode_latents_to_frames(pred_z[0, :4])
 
-    # 5. Create WandB visualization grid [Ground Truth | Predicted]
-    frame_rows = []
+    # 5. Build Side-by-Side Comparison Grid
+    rows = []
     for i in range(gt_frames.shape[0]):
-        # Concatenate horizontally: [64x64] + [64x64] -> [64x128]
-        side_by_side = torch.cat([gt_frames[i], pred_frames[i]], dim=-1)
-        # Convert to HWC uint8 for WandB
-        img_np = (side_by_side.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-        frame_rows.append(img_np)
+        # Concatenate horizontally: [Ground Truth | Prediction]
+        combined = torch.cat([gt_frames[i], pred_frames[i]], dim=-1)
+        # Convert [C, H, W] -> [H, W, C] and scale to 255 for WandB
+        img_np = (combined.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+        rows.append(img_np)
 
-    # Stack the 4 frames vertically
-    final_grid = np.concatenate(frame_rows, axis=0)
+    # Stack the 4 frames vertically for a long image
+    final_grid = np.concatenate(rows, axis=0)
 
     wandb.log({
-        "reconstruction": wandb.Image(final_grid, caption=f"Step {step} | Left: Ground Truth, Right: Predicted"),
+        "world_model_reconstruction": wandb.Image(final_grid, caption=f"Step {step} | Left: Ground Truth, Right: Predicted"),
         "step": step
     })
 
     wm_eval.train()
     builder_eval.train()
-
 # ---------------------------------------------------------------------------
 def main():
     cfg = AtariWMConfig()
