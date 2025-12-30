@@ -83,22 +83,48 @@ def load_atari_models(cfg):
 
 @torch.no_grad()
 def decode_latents_to_video(tokenizer, latents, cfg):
-    """Converts (T, N, D) latents to (T, H, W, 3) images."""
+    """
+    Decodes (T, N, D) latents to (T, H, W, 3) images in chunks.
+    Matches the training clip_length (4) to avoid pos_embed noise.
+    """
     T, N, D = latents.shape
-    z_in = latents.unsqueeze(0) # (1, T, N, D)
+    device = latents.device
+    chunk_size = 4 # MUST match tokenizer training clip_length
     
-    x = tokenizer.from_latent(z_in)
-    x = x.view(1, T * N, tokenizer.embed_dim)
-    x = tokenizer._run_stack(x, tokenizer.decoder, T=T, N=N)
-    x = x.view(1, T, N, tokenizer.embed_dim)
-    patches = tokenizer.output_proj(x)
-    
+    all_frames = []
     patchifier = Patchifier(cfg.patch_size)
-    frames = patchifier.unpatchify(patches.squeeze(0), cfg.resize, cfg.patch_size)
     
-    # Convert to numpy uint8
-    frames_np = (frames.permute(0, 2, 3, 1).cpu().numpy() * 255).astype(np.uint8)
-    return frames_np
+    # Process in chunks of 4 to match training temporal window
+    for t_start in range(0, T, chunk_size):
+        t_end = min(t_start + chunk_size, T)
+        T_curr = t_end - t_start
+        
+        # 1. Prepare Chunk (1, T_curr, N, D)
+        z_chunk = latents[t_start:t_end].unsqueeze(0)
+        
+        # 2. Latent -> Embeddings
+        x = tokenizer.from_latent(z_chunk) # (1, T_curr, N, E)
+        x = x.view(1, T_curr * N, tokenizer.embed_dim)
+        
+        # 3. Add Positional Embeddings (Same indices 0..255 used in training)
+        seq_len = T_curr * N
+        x = x + tokenizer.pos_embed[:, :seq_len, :]
+        
+        # 4. Decoder Stack
+        x = tokenizer._run_stack(x, tokenizer.decoder, T=T_curr, N=N)
+        
+        # 5. Project to Pixels
+        x = x.view(1, T_curr, N, tokenizer.embed_dim)
+        patches = tokenizer.output_proj(x)
+        
+        # 6. Unpatchify frames in this chunk
+        for t in range(T_curr):
+            frame = patchifier.unpatchify(patches[0, t:t+1], cfg.resize, cfg.patch_size)[0]
+            # Convert to [0, 255] uint8 HWC
+            frame_np = (frame.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+            all_frames.append(frame_np)
+            
+    return np.array(all_frames)
 
 @torch.no_grad()
 def dream_sequence(cfg, wm, builder, tokenizer):
