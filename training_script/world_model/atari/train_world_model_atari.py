@@ -21,7 +21,7 @@ class AtariWMConfig:
     # Dataset paths
     latent_path = Path("data/atari/latent_sequences/video_full_frames.pt")
     actions_jsonl = Path("data/atari/raw/actions.jsonl")
-    tokenizer_ckpt = Path("checkpoints/atari/tokenizer_v2/best_model.pt")
+    tokenizer_ckpt = Path("checkpoints/atari/tokenizer_v3/best_model.pt")
     
     # Model architecture
     resize = (64, 64)
