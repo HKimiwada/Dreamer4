@@ -21,7 +21,7 @@ class AtariConfig:
     # Model architecture (Optimized for 64x64)
     resize = (64, 64)       
     patch_size = 8         
-    clip_length = 4
+    clip_length = 64
     input_dim = 3 * patch_size * patch_size
     embed_dim = 256
     latent_dim = 256
@@ -30,7 +30,7 @@ class AtariConfig:
     
     # Training (Scale batch size for 16GB V100)
     batch_size = 64        # Per-GPU batch size
-    num_workers = 64
+    num_workers = 8
     lr = 1e-4
     weight_decay = 1e-2
     max_epochs = 100         
