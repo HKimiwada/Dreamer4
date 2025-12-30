@@ -19,7 +19,7 @@ class AtariInferenceConfig:
     wm_ckpt_path = Path("checkpoints/world_model/atari_v1/best_wm.pt")
     latent_path = Path("data/atari/latent_sequences/video_full_frames.pt")
     actions_jsonl = Path("data/atari/raw/actions.jsonl")
-    output_dir = Path("inference/results/atari")
+    output_dir = Path("inference/results/world_model/atari")
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
     
