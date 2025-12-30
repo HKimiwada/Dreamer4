@@ -102,42 +102,56 @@ def decode_latents_to_video(tokenizer, latents, cfg):
 
 @torch.no_grad()
 def dream_sequence(cfg, wm, builder, tokenizer):
-    """Generates a sequence using the ODE solver."""
     device = cfg.device
     T = cfg.gen_length
     
-    # 1. Load Actions for conditioning
-    # We take a slice of actions from your real data to see if the physics match
-    print("Loading actions from ground truth...")
+    # 1. Load Ground Truth for the SEED frame
+    print("Loading seed frame and actions...")
+    data = torch.load(cfg.latent_path, map_location="cpu")
+    all_latents = data["z"] # [100000, 64, 256]
+    
+    # Start the dream with frame 0 from your dataset
+    seed_z = all_latents[0:1].to(device) # (1, 64, 256)
+    
     actions = []
     with open(cfg.actions_jsonl, "r") as f:
         for i, line in enumerate(f):
             if i >= T: break
             actions.append(json.loads(line)["action"])
-    actions_tensor = torch.tensor(actions, device=device).unsqueeze(0) # (1, T)
+    actions_tensor = torch.tensor(actions, device=device).unsqueeze(0)
 
-    # 2. ODE Solver (Euler Method)
-    # Start with pure noise
+    # 2. Initialize sequence: Seed frame + Noise for the rest
+    # z: (1, T, 64, 256)
     z = torch.randn(1, T, cfg.n_latents, cfg.latent_dim, device=device)
-    dt = 1.0 / cfg.num_ode_steps
+    z[:, 0] = seed_z # Set the first frame to ground truth
+
+    # 3. ODE Solver
+    num_steps = 50 # Increased for better quality
+    dt = 1.0 / num_steps
     
-    print(f"Dreaming {T} frames via {cfg.num_ode_steps} ODE steps...")
-    for i in tqdm(range(cfg.num_ode_steps)):
-        tau = torch.full((1, T), i / cfg.num_ode_steps, device=device)
-        d = torch.full((1,), 0.0, device=device) # d=0 for inference
+    for i in tqdm(range(num_steps)):
+        t_val = i / num_steps
+        tau = torch.full((1, T), t_val, device=device)
+        # IMPORTANT: d=0 indicates we are looking for the 'cleanest' prediction
+        d = torch.zeros(1, device=device) 
         
-        # Build tokens
+        # Builder creates tokens including actions, registers, and shortcut(tau, d)
         tokens = builder(z, actions_tensor, tau, d)
         
-        # Predict clean latents
-        # We assume inference starts at offset 0
-        pred_z_clean = wm({"wm_input_tokens": tokens, "tau": tau}, time_offset=0)
+        # Dynamics model expects the full dict including 'd'
+        input_dict = {
+            "wm_input_tokens": tokens, 
+            "tau": tau,
+            "d": d 
+        }
         
-        # Euler update: z_{t+dt} = z_t + (z_clean - z_t) * dt
+        pred_z_clean = wm(input_dict, time_offset=0)
+        
+        # Euler update (Don't update the seed frame)
         v_pred = pred_z_clean - z
-        z = z + v_pred * dt
+        z[:, 1:] = z[:, 1:] + (v_pred[:, 1:] * dt)
         
-    print("Decoding dream to pixels...")
+    print("Decoding dream...")
     return decode_latents_to_video(tokenizer, z.squeeze(0), cfg)
 
 def main():
