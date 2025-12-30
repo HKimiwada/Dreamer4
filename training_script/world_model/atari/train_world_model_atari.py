@@ -23,26 +23,26 @@ class AtariWMConfig:
     actions_jsonl = Path("data/atari/raw/actions.jsonl")
     tokenizer_ckpt = Path("checkpoints/atari/tokenizer_v2/best_model.pt")
     
-    # Model architecture - INCREASED CAPACITY for complex dynamics
+    # Model architecture
     resize = (64, 64)
     patch_size = 8         
     n_latents = 64
     input_dim = 3 * patch_size * patch_size
     latent_dim = 256
-    embed_dim = 512        # Increased from 256 for better memory/tracking
+    embed_dim = 512        
     action_dim = 4         
-    num_layers = 12        # Increased from 8 to capture temporal depth
+    num_layers = 12        
     num_heads = 8
     Sa = 1                 
     Sr = 8                 
 
-    # Training Params - SCALED for 8x V100 16GB
-    batch_size = 16        # Increased from 4 for more stable gradients
+    # Training Params
+    batch_size = 16        
     clip_length = 64       
     stride = 32            
     lr = 2e-4
-    max_steps = 100000     # Ensure we actually reach this
-    warmup_steps = 5000    # Longer warmup for the larger model
+    max_steps = 100000     
+    warmup_steps = 5000    
     visualize_interval = 500
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -128,11 +128,14 @@ def visualize_step(wm, builder, tokenizer, batch, cfg, step, device):
     noise = torch.randn_like(latents)
     z_corr = (1.0 - tau.unsqueeze(-1).unsqueeze(-1)) * noise + tau.unsqueeze(-1).unsqueeze(-1) * latents
 
+    # Corrected: Build input dictionary and pass start_idx as a Tensor
     tokens = builder_eval(z_corr, actions, tau, d)
-    pred_z = wm_eval({"wm_input_tokens": tokens, "tau": tau, "d": d, "z_clean": latents, "z_corrupted": z_corr}, 
-                     time_offset=batch["start_idx"][0].item())
+    wm_input = {"wm_input_tokens": tokens, "tau": tau, "d": d, "z_clean": latents, "z_corrupted": z_corr}
+    # Use only the first item in batch for viz, but maintain tensor shape (1,)
+    pred_z = wm_eval(wm_input, time_offsets=batch["start_idx"][:1].to(device))
 
     def decode(z_seq):
+        # IMPORTANT: Tokenizer decoder must match trained clip_length
         T_sub = z_seq.shape[0]; z_in = z_seq.unsqueeze(0)
         x = tokenizer.from_latent(z_in) 
         x = x.view(1, T_sub * N, tokenizer.embed_dim)
@@ -141,6 +144,7 @@ def visualize_step(wm, builder, tokenizer, batch, cfg, step, device):
         patches = tokenizer.output_proj(x)
         return Patchifier(cfg.patch_size).unpatchify(patches.squeeze(0), cfg.resize, cfg.patch_size)
 
+    # Visualize first 4 frames of the sequence
     gt_f = decode(latents[0, :4]); pr_f = decode(pred_z[0, :4])
     rows = [np.concatenate([(torch.cat([gt_f[i], pr_f[i]], dim=-1).permute(1,2,0).cpu().numpy()*255).astype(np.uint8)], axis=1) for i in range(4)]
     final_grid = np.concatenate(rows, axis=0)
@@ -175,7 +179,6 @@ def main():
     optimizer = torch.optim.AdamW(list(wm.parameters()) + list(builder.parameters()), lr=cfg.lr)
     scaler = GradScaler(); global_step = 0; best_loss = float('inf'); epoch = 0
 
-    # CORRECTED: Loop until max_steps is reached
     while global_step < cfg.max_steps:
         sampler.set_epoch(epoch)
         for batch in tqdm(loader, disable=not is_main, desc=f"Epoch {epoch}"):
@@ -190,8 +193,10 @@ def main():
 
             with autocast(device_type="cuda", dtype=torch.float16):
                 tokens = builder(z_corr, actions, tau, d)
-                pred_z = wm({"wm_input_tokens": tokens, "tau": tau, "d": d, "z_clean": latents, "z_corrupted": z_corr}, 
-                             time_offset=batch["start_idx"][0].item())
+                # Corrected: Define wm_input dictionary
+                wm_input = {"wm_input_tokens": tokens, "tau": tau, "d": d, "z_clean": latents, "z_corrupted": z_corr}
+                # Corrected: Pass the entire batch of start_indices
+                pred_z = wm(wm_input, time_offsets=batch["start_idx"].to(device))
                 loss = flow_loss_v2(pred_z, latents, tau, ramp_weight=True)
 
             optimizer.zero_grad()

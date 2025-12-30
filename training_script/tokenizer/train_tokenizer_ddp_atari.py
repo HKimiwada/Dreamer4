@@ -41,8 +41,8 @@ class AtariConfig:
     num_frames_to_viz = 4
     
     # Paths
-    ckpt_dir = Path("checkpoints/atari/tokenizer_v2")
-    viz_dir = Path("visualizations/atari/tokenizer_v2")
+    ckpt_dir = Path("checkpoints/atari/tokenizer_v3")
+    viz_dir = Path("visualizations/atari/tokenizer_v3")
     
     # WandB
     project = "dreamer4-atari"

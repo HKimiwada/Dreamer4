@@ -100,7 +100,7 @@ class CausalTokenizer(nn.Module):
         self.output_proj = nn.Linear(embed_dim, input_dim)
 
         self.pos_embed = nn.Parameter(torch.zeros(1, 100000, embed_dim))
-        nn.init.trunc_normal_(self.pos_embed, std=0.5)
+        nn.init.trunc_normal_(self.pos_embed, std=0.02)
         self._max_len = 100000
 
         # --- Optional FlashAttention (PyTorch >=2.1) ---
