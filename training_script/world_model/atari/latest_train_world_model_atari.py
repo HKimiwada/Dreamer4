@@ -46,7 +46,7 @@ class AtariWMConfig:
     visualize_interval = 500
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    ckpt_dir = Path("checkpoints/world_model/atari_v3")
+    ckpt_dir = Path("checkpoints/world_model/atari_v4")
 
 # ---------------------------------------------------------------------------
 class AtariWorldModelDataset(Dataset):
@@ -62,7 +62,9 @@ class AtariWorldModelDataset(Dataset):
                 entry = json.loads(line)
                 self.actions.append(entry["action"])
         
-        self.actions = torch.tensor(self.actions, dtype=torch.long)
+        # Ensure 1:1 alignment even if a few frames were dropped during sliding window
+        self.actions = torch.tensor(self.actions, dtype=torch.long)[:len(self.latents)]
+        
         self.clip_length = cfg.clip_length
         self.stride = cfg.stride
         self.start_indices = list(range(0, len(self.latents) - self.clip_length, self.stride))
@@ -107,6 +109,55 @@ class AtariDataBuilder(nn.Module):
         return tokens.view(B, T * (N + self.cfg.Sa + self.cfg.Sr + 1), E)
 
 # ---------------------------------------------------------------------------
+@torch.no_grad()
+def visualize_step(wm, builder, tokenizer, batch, cfg, step, device):
+    """Backported fixed visualization with Local Positional Context."""
+    wm_eval = wm.module if hasattr(wm, "module") else wm
+    builder_eval = builder.module if hasattr(builder, "module") else builder
+    wm_eval.eval(); builder_eval.eval(); tokenizer.eval()
+
+    # Slice to Batch size = 1
+    latents = batch["latents"][:1].to(device)
+    actions = batch["actions"][:1].to(device)
+    start_indices = batch["start_idx"][:1].to(device)
+    B, T, N, D = latents.shape
+
+    tau = torch.full((B, T), 0.5, device=device) # Denoising test
+    d = torch.full((B,), 0.25, device=device)
+    noise = torch.randn_like(latents)
+    z_corr = (1.0 - tau.unsqueeze(-1).unsqueeze(-1)) * noise + tau.unsqueeze(-1).unsqueeze(-1) * latents
+
+    tokens = builder_eval(z_corr, actions, tau, d)
+    wm_input = {"wm_input_tokens": tokens, "tau": tau, "d": d, "z_clean": latents, "z_corrupted": z_corr}
+    pred_z = wm_eval(wm_input, time_offsets=start_indices)
+
+    def decode_with_local_context(z_seq):
+        """Helper mirroring the 'Perfect' diagnostic logic."""
+        B_v, T_v, N_v, D_v = z_seq.shape
+        x = tokenizer.from_latent(z_seq) 
+        x = x.view(B_v, T_v * N_v, tokenizer.embed_dim)
+        # CRITICAL FIX: Local Positional Embedding Addition
+        x = x + tokenizer.pos_embed[:, :T_v * N_v, :]
+        x = tokenizer._run_stack(x, tokenizer.decoder, T=T_v, N=N_v)
+        x = x.view(B_v, T_v, N_v, tokenizer.embed_dim)
+        patches = tokenizer.output_proj(x)
+        full_frames = Patchifier(cfg.patch_size).unpatchify(patches.squeeze(0), cfg.resize, cfg.patch_size)
+        return full_frames[-4:] # Return last 4 frames for max context
+
+    gt_f = decode_with_local_context(latents)
+    pr_f = decode_with_local_context(pred_z)
+
+    rows = []
+    for i in range(4):
+        combined = torch.cat([gt_f[i].clamp(0,1), pr_f[i].clamp(0,1)], dim=-1)
+        img_np = (combined.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+        rows.append(img_np)
+    
+    final_grid = np.concatenate(rows, axis=0)
+    wandb.log({"reconstruction_diagnostic": wandb.Image(final_grid, caption=f"Step {step} (L:GT, R:Pred)"), "step": step})
+    wm_eval.train(); builder_eval.train()
+
+# ---------------------------------------------------------------------------
 def setup_ddp():
     dist.init_process_group(backend="nccl")
     rank = dist.get_rank()
@@ -114,89 +165,6 @@ def setup_ddp():
     torch.cuda.set_device(local_rank)
     return rank, local_rank, dist.get_world_size()
 
-@torch.no_grad()
-def visualize_step(wm, builder, tokenizer, batch, cfg, step, device):
-    """
-    Drop-in replacement for visualize_step to fix the batch-size mismatch 
-    between tokens and time_offsets.
-    """
-    wm_eval = wm.module if hasattr(wm, "module") else wm
-    builder_eval = builder.module if hasattr(builder, "module") else builder
-    wm_eval.eval(); builder_eval.eval(); tokenizer.eval()
-
-    # 1. Slice all inputs to the first sequence in the batch (Batch size = 1)
-    # This ensures consistency with the provided time_offsets tensor.
-    latents = batch["latents"][:1].to(device) # (1, T, N, D)
-    actions = batch["actions"][:1].to(device) # (1, T)
-    start_indices = batch["start_idx"][:1].to(device) # (1,)
-    
-    B, T, N, D = latents.shape # B is now 1
-    
-    # 2. Simulated corruption (tau=0.5 denoising test)
-    tau = torch.full((B, T), 0.5, device=device)
-    d = torch.full((B,), 0.25, device=device)
-    noise = torch.randn_like(latents)
-    z_corr = (1.0 - tau.unsqueeze(-1).unsqueeze(-1)) * noise + tau.unsqueeze(-1).unsqueeze(-1) * latents
-
-    # 3. World Model Prediction
-    # Builder expands tau and d into the token sequence
-    tokens = builder_eval(z_corr, actions, tau, d)
-    
-    # Package input dictionary
-    wm_input = {
-        "wm_input_tokens": tokens, 
-        "tau": tau, 
-        "d": d, 
-        "z_clean": latents, 
-        "z_corrupted": z_corr
-    }
-    
-    # Pass the sliced start_indices tensor (Batch size 1)
-    pred_z = wm_eval(wm_input, time_offsets=start_indices) # (1, T, N, D)
-
-    def decode(z_seq):
-        """Helper to decode (T_sub, N, D) latents to pixels."""
-        T_sub = z_seq.shape[0]
-        z_in = z_seq.unsqueeze(0) # (1, T_sub, N, D)
-        
-        # Project from latent bottleneck
-        x = tokenizer.from_latent(z_in) 
-        x = x.view(1, T_sub * N, tokenizer.embed_dim)
-        
-        # Run through decoder transformer stack
-        x = tokenizer._run_stack(x, tokenizer.decoder, T=T_sub, N=N)
-        
-        # Project back to pixels and unpatchify
-        x = x.view(1, T_sub, N, tokenizer.embed_dim)
-        patches = tokenizer.output_proj(x)
-        return Patchifier(cfg.patch_size).unpatchify(patches.squeeze(0), cfg.resize, cfg.patch_size)
-
-    # 4. Decode the first 4 frames of Ground Truth and the World Model's Prediction
-    gt_f = decode(latents[0, :4])
-    pr_f = decode(pred_z[0, :4])
-
-    # 5. Build visualization grid [GT | Pred]
-    rows = []
-    for i in range(4):
-        # Horizontal strip: [GT Frame | Predicted Frame]
-        combined = torch.cat([gt_f[i], pr_f[i]], dim=-1)
-        # Convert (3, H, W) -> (H, W, 3) uint8
-        img_np = (combined.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-        rows.append(img_np)
-    
-    # Stack the strips vertically
-    final_grid = np.concatenate(rows, axis=0) 
-    
-    # 6. Log results
-    wandb.log({
-        "reconstruction_diagnostic": wandb.Image(final_grid, caption=f"Step {step} (Left: GT, Right: Pred)"), 
-        "global_step": step
-    })
-    
-    # Restore model training states
-    wm_eval.train(); builder_eval.train()
-
-# ---------------------------------------------------------------------------
 def main():
     cfg = AtariWMConfig()
     rank, local_rank, world_size = setup_ddp()
@@ -204,17 +172,14 @@ def main():
     is_main = rank == 0
 
     if is_main:
-        wandb.init(project="dreamer4-atari-wm", config=vars(cfg))
+        wandb.init(project="dreamer4-atari-wm-v3", config=vars(cfg))
         cfg.ckpt_dir.mkdir(parents=True, exist_ok=True)
 
+    # 1. Models
     tokenizer = CausalTokenizer(input_dim=cfg.input_dim, embed_dim=256, num_heads=8, num_layers=8, latent_dim=256)
     tk_ckpt = torch.load(cfg.tokenizer_ckpt, map_location="cpu")
     tokenizer.load_state_dict({k.replace("module.", ""): v for k, v in tk_ckpt["model_state"].items()})
     tokenizer.to(device).eval()
-
-    dataset = AtariWorldModelDataset(cfg)
-    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
-    loader = DataLoader(dataset, batch_size=cfg.batch_size, sampler=sampler, num_workers=4, pin_memory=True)
 
     builder = AtariDataBuilder(cfg).to(device)
     wm = WorldModel(d_model=cfg.embed_dim, d_latent=cfg.latent_dim, num_layers=cfg.num_layers, 
@@ -224,6 +189,12 @@ def main():
     optimizer = torch.optim.AdamW(list(wm.parameters()) + list(builder.parameters()), lr=cfg.lr)
     scaler = GradScaler(); global_step = 0; best_loss = float('inf'); epoch = 0
 
+    # 2. Data
+    dataset = AtariWorldModelDataset(cfg)
+    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True)
+    loader = DataLoader(dataset, batch_size=cfg.batch_size, sampler=sampler, num_workers=4, pin_memory=True)
+
+    # 3. Training Loop
     while global_step < cfg.max_steps:
         sampler.set_epoch(epoch)
         for batch in tqdm(loader, disable=not is_main, desc=f"Epoch {epoch}"):
@@ -231,6 +202,7 @@ def main():
             
             latents = batch["latents"].to(device)
             actions = batch["actions"].to(device)
+            # Flow matching noise schedule
             tau = torch.rand(latents.shape[0], latents.shape[1], device=device)
             d = torch.rand(latents.shape[0], device=device)
             noise = torch.randn_like(latents)
@@ -238,9 +210,8 @@ def main():
 
             with autocast(device_type="cuda", dtype=torch.float16):
                 tokens = builder(z_corr, actions, tau, d)
-                # Corrected: Define wm_input dictionary
                 wm_input = {"wm_input_tokens": tokens, "tau": tau, "d": d, "z_clean": latents, "z_corrupted": z_corr}
-                # Corrected: Pass the entire batch of start_indices
+                # Use batch indices for temporal anchoring
                 pred_z = wm(wm_input, time_offsets=batch["start_idx"].to(device))
                 loss = flow_loss_v2(pred_z, latents, tau, ramp_weight=True)
 
@@ -250,7 +221,7 @@ def main():
 
             global_step += 1
             if is_main and global_step % 10 == 0:
-                wandb.log({"loss": loss.item(), "step": global_step, "epoch": epoch})
+                wandb.log({"loss": loss.item(), "step": global_step})
                 if loss.item() < best_loss:
                     best_loss = loss.item()
                     torch.save(wm.module.state_dict(), cfg.ckpt_dir / "best_wm.pt")

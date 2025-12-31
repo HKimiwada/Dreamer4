@@ -4,29 +4,22 @@
 # World Model = Causal ViT trained on these WM with short-cut forcing. 
 # Latent Token: (T, N, D) -> T is the number of frames per clip, N is the number of tokens per frame, D is the dimension of the latent token
 # Currently: (8, 448, 256)
-import os
+# world_model/wm_preprocessing/latent_tokenizer_atari.py
 import torch
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-import torchvision.transforms as T
-import cv2
-import os
+from torch.utils.data import DataLoader
 from pathlib import Path
+import tqdm
 
 from tokenizer.model.encoder_decoder import CausalTokenizer
 from tokenizer.patchify_mask import Patchifier
-from tokenizer.tokenizer_dataset import TokenizerDatasetWM
-
-import tqdm
 
 # ---------------------------------------------------------------------------
 class AtariConfig:
-    # Dataset paths
     data_dir = Path("data/atari/raw")
-    ckpt_path = Path("checkpoints/atari/tokenizer_v2/best_model.pt")
+    ckpt_path = Path("checkpoints/atari/tokenizer_v3/best_model.pt")
     output_dir = Path("data/atari/latent_sequences")
     
-    # Model architecture (Optimized for 64x64)
     resize = (64, 64)       
     patch_size = 8         
     input_dim = 3 * patch_size * patch_size
@@ -34,28 +27,22 @@ class AtariConfig:
     latent_dim = 256
     num_heads = 8           
     num_layers = 8         
+    clip_length = 64 
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ---------------------------------------------------------------------------
 class AtariLatentDataset(torch.utils.data.Dataset):
-    """Simple dataset to iterate through your 100k .pt frames."""
-    def __init__(self, data_dir, patch_size=16):
+    def __init__(self, data_dir, patch_size=8):
         self.data_dir = Path(data_dir)
         self.frame_paths = sorted(list(self.data_dir.glob("frame_*.pt")))
         self.patchifier = Patchifier(patch_size=patch_size)
         
-        if not self.frame_paths:
-            raise RuntimeError(f"No .pt frames found in {data_dir}")
-
     def __len__(self):
         return len(self.frame_paths)
 
     def __getitem__(self, idx):
-        # Load (C, H, W) byte tensor and normalize
         f = torch.load(self.frame_paths[idx], map_location="cpu").float() / 255.0
-        # Convert to patches (1, N, D)
-        patches = self.patchifier(f.unsqueeze(0)) 
-        return patches.squeeze(0) # (N, D)
+        return self.patchifier(f.unsqueeze(0)).squeeze(0)
 
 # ---------------------------------------------------------------------------
 class TokenizerWrapper(nn.Module):
@@ -71,48 +58,72 @@ class TokenizerWrapper(nn.Module):
             use_checkpoint=False,
         )
         
-        # Load weights and strip 'module.' if trained with DDP
+        print(f"Loading Tokenizer V3 weights from {cfg.ckpt_path}...")
         ckpt = torch.load(cfg.ckpt_path, map_location="cpu")
         state = ckpt["model_state"] if "model_state" in ckpt else ckpt
         state = {k.replace("module.", ""): v for k, v in state.items()}
-        
         self.model.load_state_dict(state)
         self.model.to(cfg.device).eval()
-        
-        for p in self.model.parameters():
-            p.requires_grad = False
 
     @torch.no_grad()
     def encode_latents(self, patches):
-        """patches: (B, T, N, D) -> returns (B, T, N, latent_dim)"""
+        """Helper to run the full encoding pipeline with temporal context."""
         B, T, N, D = patches.shape
+        # 1. Project to embedding space
         x = self.model.input_proj(patches)
         x = x.view(B, T * N, self.model.embed_dim)
-        x = x + self.model.pos_embed[:, :T*N, :]
+        
+        # 2. Add Positional Embeddings (Correct slicing for T*N)
+        x = x + self.model.pos_embed[:, :T * N, :]
+        
+        # 3. Run Encoder Transformer Stack
         x = self.model._run_stack(x, self.model.encoder, T, N)
+        
+        # 4. To Latent Bottleneck
         x = x.view(B, T, N, self.model.embed_dim)
         return self.model.to_latent(x)
 
+    @torch.no_grad()
     def export_all_latents(self, cfg):
         cfg.output_dir.mkdir(parents=True, exist_ok=True)
         dataset = AtariLatentDataset(cfg.data_dir, cfg.patch_size)
-        # Process in batches for speed (e.g., 64 frames at once)
-        loader = torch.utils.data.DataLoader(dataset, batch_size=64, shuffle=False)
         
         all_z = []
-        print(f"[Export] Processing {len(dataset)} frames...")
+        L = len(dataset)
+        C = cfg.clip_length
+        
+        print(f"[Export] Encoding {L} frames using SLIDING WINDOW (T={C})")
+        print("This ensures maximum temporal context for every frame.")
 
-        for batch in tqdm.tqdm(loader):
-            # batch is (B, N, D). Add temporal dimension T=1 for the encoder
-            patches = batch.unsqueeze(1).to(cfg.device) # (B, 1, N, D)
-            z = self.encode_latents(patches) # (B, 1, N, latent_dim)
-            all_z.append(z.squeeze(1).cpu()) # Store as (B, N, latent_dim)
+        # 1. Handle the first window (0 to 63)
+        # We store all 64 latents from this initial pass.
+        first_frames = [dataset[i] for i in range(C)]
+        patches = torch.stack(first_frames).unsqueeze(0).to(cfg.device)
+        z_initial = self.encode_latents(patches) # (1, 64, N, Latent_Dim)
+        all_z.append(z_initial.squeeze(0).cpu()) # Store all 64
 
-        # Concatenate everything into one long sequence
-        full_seq = torch.cat(all_z, dim=0) # (100000, N, latent_dim)
+        # 2. Sliding Window for remaining frames
+        # For every frame from 64 onwards, we look back 63 frames.
+        # We only keep the very last latent produced.
+        for i in tqdm.tqdm(range(C, L), desc="Sliding Context"):
+            # Load the 64-frame window ending at i
+            # Optimization note: In a real production environment, you'd use a 
+            # rolling buffer here, but for 100k frames, this is safer.
+            window = [dataset[j] for j in range(i - C + 1, i + 1)]
+            patches = torch.stack(window).unsqueeze(0).to(cfg.device)
+            
+            z_window = self.encode_latents(patches) # (1, 64, N, Latent_Dim)
+            
+            # We ONLY want the latent for the current frame (the last one in the window)
+            # This frame has the "perfect" context of the previous 63 frames.
+            all_z.append(z_window[:, -1, :, :].cpu()) 
+
+        # 3. Save
+        full_seq = torch.cat(all_z, dim=0) 
         out_path = cfg.output_dir / "video_full_frames.pt"
         torch.save({"z": full_seq, "length": full_seq.shape[0]}, out_path)
-        print(f"✓ Saved latent sequence: {out_path} | Shape: {full_seq.shape}")
+        print(f"✓ Success! Noise-free latents saved to: {out_path}")
+        print(f"Final Shape: {full_seq.shape}")
 
 if __name__ == "__main__":
     config = AtariConfig()
