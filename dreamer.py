@@ -7,10 +7,10 @@ from tqdm import tqdm
 from tokenizer.model.encoder_decoder import CausalTokenizer
 from world_model.wm.dynamics_model_atari import WorldModel
 from tokenizer.patchify_mask import Patchifier
-from training_script.world_model.atari.train_world_model_atari import AtariWMConfig, AtariDataBuilder
+from training_script.world_model.atari.latest_train_world_model_atari import AtariWMConfig, AtariDataBuilder
 
 @torch.no_grad()
-def generate_dream_video(num_frames=100):
+def generate_dream_video(num_frames=200):
     cfg = AtariWMConfig()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -75,7 +75,7 @@ def generate_dream_video(num_frames=100):
         current_latents = torch.cat([current_latents[:, 1:, :, :], next_latent], dim=1)
 
     # 4. Save to Video
-    out_path = "atari_dream.mp4"
+    out_path = "latest_atari_dream.mp4"
     height, width, _ = dream_frames[0].shape
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     video = cv2.VideoWriter(out_path, fourcc, 20, (width, height))
