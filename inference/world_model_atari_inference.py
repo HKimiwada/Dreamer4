@@ -15,8 +15,8 @@ from training_script.world_model.atari.train_world_model_atari import AtariDataB
 # --- Configuration (Must match your Atari training config) ---
 class AtariInferenceConfig:
     # Paths
-    tokenizer_ckpt = Path("checkpoints/atari/tokenizer_v2/best_model.pt")
-    wm_ckpt_path = Path("checkpoints/world_model/atari_v1/best_wm.pt")
+    tokenizer_ckpt = Path("checkpoints/atari/tokenizer_v3/best_model.pt")
+    wm_ckpt_path = Path("checkpoints/world_model/atari_v4/best_wm.pt")
     latent_path = Path("data/atari/latent_sequences/video_full_frames.pt")
     actions_jsonl = Path("data/atari/raw/actions.jsonl")
     output_dir = Path("inference/results/world_model/atari")
@@ -28,7 +28,7 @@ class AtariInferenceConfig:
     patch_size = 8
     n_latents = 64         # 8x8 patches
     latent_dim = 256
-    embed_dim = 256
+    embed_dim = 512
     action_dim = 4
     Sr = 8                 # Register tokens
     Sa = 1                 # Action tokens
@@ -47,7 +47,7 @@ def load_atari_models(cfg):
     # 1. Tokenizer
     tokenizer = CausalTokenizer(
         input_dim=3 * cfg.patch_size * cfg.patch_size,
-        embed_dim=cfg.embed_dim,
+        embed_dim=256,
         num_heads=8,
         num_layers=8,
         latent_dim=cfg.latent_dim,
@@ -62,7 +62,7 @@ def load_atari_models(cfg):
     world_model = WorldModel(
         d_model=cfg.embed_dim,
         d_latent=cfg.latent_dim,
-        num_layers=8,
+        num_layers=12,
         num_heads=8,
         n_latents=cfg.n_latents,
         Sr=cfg.Sr,
@@ -166,7 +166,9 @@ def generate_atari_dream(cfg, wm, builder, tokenizer):
                 "d": d_map
             }
             
-            pred_chunk = wm(wm_input, time_offset=t_start)
+            # Wrap t_start in a tensor to match the expected (B,) shape
+            offsets_tensor = torch.tensor([t_start], device=device)
+            pred_chunk = wm(wm_input, time_offsets=offsets_tensor)
             pred_chunks.append(pred_chunk)
             
         pred_z_clean = torch.cat(pred_chunks, dim=1)
