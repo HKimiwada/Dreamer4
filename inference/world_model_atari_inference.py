@@ -9,10 +9,9 @@ from tqdm import tqdm
 from tokenizer.model.encoder_decoder import CausalTokenizer
 from tokenizer.patchify_mask import Patchifier
 from world_model.wm.dynamics_model_atari import WorldModel
-# Using the builder logic from your Atari training script
 from training_script.world_model.atari.train_world_model_atari import AtariDataBuilder
 
-# --- Configuration (Must match your Atari training config) ---
+# --- Configuration (Aligned with Atari v4 Training) ---
 class AtariInferenceConfig:
     # Paths
     tokenizer_ckpt = Path("checkpoints/atari/tokenizer_v3/best_model.pt")
@@ -26,17 +25,21 @@ class AtariInferenceConfig:
     # Model Architecture
     resize = (64, 64)
     patch_size = 8
-    n_latents = 64         # 8x8 patches
+    n_latents = 64         
     latent_dim = 256
-    embed_dim = 512
+    
+    # v4 Specific dimensions
+    embed_dim = 512        # World Model embedding dimension
+    tokenizer_dim = 256    # Tokenizer embedding dimension (v3)
+    num_layers = 12        # World Model layers
+    
     action_dim = 4
-    Sr = 8                 # Register tokens
-    Sa = 1                 # Action tokens
+    Sr = 8                 
+    Sa = 1                 
     
     # Inference Params
-    num_ode_steps = 50     # Flow Matching Euler steps
-    gen_length = 64        # Sequence length
-    chunk_size = 16        # Small chunks for memory efficiency
+    num_ode_steps = 50     
+    gen_length = 64        # Full context window model was trained on
     fps = 10
 
 # --- Helper Functions ---
@@ -44,10 +47,10 @@ class AtariInferenceConfig:
 def load_atari_models(cfg):
     print(f"Loading Atari models on {cfg.device}...")
     
-    # 1. Tokenizer
+    # 1. Tokenizer (v3 uses 256 dim)
     tokenizer = CausalTokenizer(
         input_dim=3 * cfg.patch_size * cfg.patch_size,
-        embed_dim=256,
+        embed_dim=cfg.tokenizer_dim, 
         num_heads=8,
         num_layers=8,
         latent_dim=cfg.latent_dim,
@@ -58,11 +61,11 @@ def load_atari_models(cfg):
     tokenizer.load_state_dict(state_dict)
     tokenizer.to(cfg.device).eval()
     
-    # 2. World Model & Builder
+    # 2. World Model & Builder (v4 uses 512 dim and 12 layers)
     world_model = WorldModel(
         d_model=cfg.embed_dim,
         d_latent=cfg.latent_dim,
-        num_layers=12,
+        num_layers=cfg.num_layers,
         num_heads=8,
         n_latents=cfg.n_latents,
         Sr=cfg.Sr,
@@ -71,7 +74,6 @@ def load_atari_models(cfg):
     builder = AtariDataBuilder(cfg)
     
     wm_state = torch.load(cfg.wm_ckpt_path, map_location="cpu")
-    # Strip DDP 'module.' prefix if needed
     wm_state = {k.replace("module.", ""): v for k, v in wm_state.items()}
     world_model.load_state_dict(wm_state)
     
@@ -81,40 +83,34 @@ def load_atari_models(cfg):
     return tokenizer, world_model, builder
 
 @torch.no_grad()
-def decode_latents_chunked(tokenizer, latents, cfg):
+def decode_latents_full_context(tokenizer, latents, cfg):
     """
-    Decodes (T, N, D) latents to (T, H, W, 3) images.
-    Uses chunking to match tokenizer training temporal window (4 frames).
+    Decodes the entire (T, N, D) sequence at once to leverage the full 
+    64-frame temporal context, fixing graininess.
     """
     T, N, D = latents.shape
     device = latents.device
-    chunk_size = 4 # Match tokenizer training clip_length
-    
-    all_frames = []
     patchifier = Patchifier(cfg.patch_size)
     
-    for t_start in range(0, T, chunk_size):
-        t_end = min(t_start + chunk_size, T)
-        T_curr = t_end - t_start
-        
-        z_chunk = latents[t_start:t_end].unsqueeze(0)
-        
-        x = tokenizer.from_latent(z_chunk) 
-        x = x.view(1, T_curr * N, tokenizer.embed_dim)
-        
-        # Add Positional Embeddings for current context
-        seq_len = T_curr * N
-        x = x + tokenizer.pos_embed[:, :seq_len, :]
-        
-        x = tokenizer._run_stack(x, tokenizer.decoder, T=T_curr, N=N)
-        
-        x = x.view(1, T_curr, N, tokenizer.embed_dim)
-        patches = tokenizer.output_proj(x)
-        
-        for t in range(T_curr):
-            frame = patchifier.unpatchify(patches[0, t:t+1], cfg.resize, cfg.patch_size)[0]
-            frame_np = (frame.clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
-            all_frames.append(frame_np)
+    z = latents.unsqueeze(0) # (1, T, N, D)
+    
+    # Mirroring the 'Perfect' diagnostic logic from training
+    x = tokenizer.from_latent(z) 
+    x = x.view(1, T * N, tokenizer.embed_dim)
+    
+    # CRITICAL: Add local positional embeddings for the full sequence
+    x = x + tokenizer.pos_embed[:, :T * N, :]
+    
+    x = tokenizer._run_stack(x, tokenizer.decoder, T=T, N=N)
+    x = x.view(1, T, N, tokenizer.embed_dim)
+    patches = tokenizer.output_proj(x)
+    
+    frames = patchifier.unpatchify(patches[0], cfg.resize, cfg.patch_size)
+    
+    all_frames = []
+    for t in range(T):
+        frame_np = (frames[t].clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+        all_frames.append(frame_np)
             
     return np.array(all_frames)
 
@@ -126,7 +122,7 @@ def generate_atari_dream(cfg, wm, builder, tokenizer):
     # 1. Load Seed and Actions
     print("Loading seed and actions...")
     data = torch.load(cfg.latent_path, map_location="cpu")
-    seed_z = data["z"][0:1].to(device) # Use first real frame as seed
+    seed_z = data["z"][0:1].to(device) # Shape: (1, N, D)
     
     actions = []
     with open(cfg.actions_jsonl, "r") as f:
@@ -136,6 +132,7 @@ def generate_atari_dream(cfg, wm, builder, tokenizer):
     actions_tensor = torch.tensor(actions, device=device).unsqueeze(0) # (1, T)
 
     # 2. ODE Initialization
+    # Initialize z as noise, but anchor the first frame to the real seed_z
     z = torch.randn(1, T, cfg.n_latents, cfg.latent_dim, device=device)
     z[:, 0] = seed_z 
     
@@ -143,42 +140,34 @@ def generate_atari_dream(cfg, wm, builder, tokenizer):
     dt = 1.0 / cfg.num_ode_steps
     
     # 3. ODE Solver Loop
+    print(f"Dreaming {T} frames using full-sequence temporal attention...")
     for i in tqdm(range(cfg.num_ode_steps)):
         t_curr = timesteps[i]
-        tau_map = torch.full((1, T), t_curr.item(), device=device)
-        d_map = torch.zeros(1, device=device)
+        tau = torch.full((1, T), t_curr.item(), device=device)
+        d_map = torch.zeros(1, device=device) # Deterministic/Zero-dist shift
         
-        pred_chunks = []
-        for t_start in range(0, T, cfg.chunk_size):
-            t_end = min(t_start + cfg.chunk_size, T)
-            curr_len = t_end - t_start
-            
-            z_chunk = z[:, t_start:t_end]
-            tau_chunk = tau_map[:, t_start:t_end]
-            act_chunk = actions_tensor[:, t_start:t_end]
-            
-            # Use Atari Builder logic
-            tokens = builder(z_chunk, act_chunk, tau_chunk, d_map)
-            
-            wm_input = {
-                "wm_input_tokens": tokens,
-                "tau": tau_chunk,
-                "d": d_map
-            }
-            
-            # Wrap t_start in a tensor to match the expected (B,) shape
-            offsets_tensor = torch.tensor([t_start], device=device)
-            pred_chunk = wm(wm_input, time_offsets=offsets_tensor)
-            pred_chunks.append(pred_chunk)
-            
-        pred_z_clean = torch.cat(pred_chunks, dim=1)
+        # NO CHUNKING: Pass the entire sequence to the World Model
+        # This allows the CausalTransformer blocks to see all context from 0 to T.
+        tokens = builder(z, actions_tensor, tau, d_map)
         
-        # Euler update (Skipping the seed frame update)
+        wm_input = {
+            "wm_input_tokens": tokens,
+            "tau": tau,
+            "d": d_map
+        }
+        
+        # Time offsets start at 0 for the whole sequence
+        offsets = torch.zeros(1, dtype=torch.long, device=device)
+        pred_z_clean = wm(wm_input, time_offsets=offsets)
+        
+        # Flow matching Euler update: v = (z_1 - z_0)
         v_pred = pred_z_clean - z
+        
+        # We only update frames 1 to T (leave the seed frame at index 0 fixed)
         z[:, 1:] = z[:, 1:] + (v_pred[:, 1:] * dt)
         
-    print("Decoding latents...")
-    return decode_latents_chunked(tokenizer, z.squeeze(0), cfg)
+    print("Decoding with full temporal context...")
+    return decode_latents_full_context(tokenizer, z.squeeze(0), cfg)
 
 def main():
     cfg = AtariInferenceConfig()
