@@ -80,17 +80,20 @@ def load_atari_models(cfg):
 
 @torch.no_grad()
 def decode_latents_full_context(tokenizer, latents, cfg):
-    """Mirroring the 'Perfect' diagnostic logic from working training script."""
+    """Refined decoding with latent range protection."""
     T, N, D = latents.shape
     device = latents.device
     patchifier = Patchifier(cfg.patch_size)
     
-    z = latents.unsqueeze(0) # (1, T, N, D)
+    # 1. LATENT CLAMPING: Prevents graininess caused by out-of-bounds WM predictions
+    # This keeps the WM output in the same 'neighborhood' as the Tokenizer Encoder.
+    latents = torch.clamp(latents, -5.0, 5.0) 
     
+    z = latents.unsqueeze(0)
     x = tokenizer.from_latent(z) 
     x = x.view(1, T * N, tokenizer.embed_dim)
     
-    # CRITICAL: Local Positional Embedding Addition (Matches training visualize_step)
+    # Matches WANDB local context fix
     x = x + tokenizer.pos_embed[:, :T * N, :]
     
     x = tokenizer._run_stack(x, tokenizer.decoder, T=T, N=N)
@@ -101,6 +104,7 @@ def decode_latents_full_context(tokenizer, latents, cfg):
     
     all_frames = []
     for t in range(T):
+        # Apply slight clipping here to ensure valid RGB range
         img_np = (frames[t].clamp(0, 1).permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
         all_frames.append(img_np)
             
@@ -112,9 +116,8 @@ def generate_atari_dream(cfg, wm, builder, tokenizer):
     T = cfg.gen_length
     
     # 1. Load Seed and Actions
-    print("Loading seed and actions...")
     data = torch.load(cfg.latent_path, map_location="cpu")
-    seed_z = data["z"][0:1].to(device) # Shape: (1, N, D)
+    seed_z = data["z"][0:1].to(device) 
     
     actions = []
     with open(cfg.actions_jsonl, "r") as f:
@@ -123,41 +126,44 @@ def generate_atari_dream(cfg, wm, builder, tokenizer):
             actions.append(json.loads(line)["action"])
     actions_tensor = torch.tensor(actions, device=device).unsqueeze(0) 
 
-    # 2. ODE Initialization
+    # 2. Initialization
     z = torch.randn(1, T, cfg.n_latents, cfg.latent_dim, device=device)
     z[:, 0] = seed_z 
     
+    # 3. Solver parameters
     timesteps = torch.linspace(0, 1, cfg.num_ode_steps + 1, device=device)
     dt = 1.0 / cfg.num_ode_steps
     
-    # 3. ODE Solver Loop
-    print(f"Dreaming {T} frames using Flow Matching Euler solver...")
+    print(f"Dreaming {T} frames...")
     pred_z_clean = None
     
     for i in tqdm(range(cfg.num_ode_steps)):
         t_curr = timesteps[i]
         tau = torch.full((1, T), t_curr.item(), device=device)
-        d_map = torch.zeros(1, device=device) 
         
-        # World Model Input
+        # FIX 1: Set 'd' to 0.5 (Neutral signal) instead of 0.0
+        # This often matches the training distribution mean better.
+        d_map = torch.full((1,), 0.5, device=device) 
+        
         tokens = builder(z, actions_tensor, tau, d_map)
         wm_input = {"wm_input_tokens": tokens, "tau": tau, "d": d_map}
         
-        # Absolute temporal anchoring
         offsets = torch.zeros(1, dtype=torch.long, device=device)
         pred_z_clean = wm(wm_input, time_offsets=offsets)
         
-        # FIXED ODE UPDATE: Scaling by (1 - t)
-        # v = (z_target - z_current) / (1 - t)
-        # Avoid division by zero at t=1
-        denom = max(1.0 - t_curr.item(), 1e-4)
-        v_pred = (pred_z_clean - z) / denom
+        # FIX 2: Clamp the clean prediction at every step to keep trajectory stable
+        pred_z_clean = torch.clamp(pred_z_clean, -5.0, 5.0)
         
-        # Update z (except for the fixed seed frame)
+        # ODE Step: v = (z_clean - z) / (1 - t)
+        eps = 1e-5
+        v_pred = (pred_z_clean - z) / (1.0 - t_curr + eps)
+        
+        # Euler step for frames 1:T
         z[:, 1:] = z[:, 1:] + (v_pred[:, 1:] * dt)
         
     print("Decoding final clean prediction...")
-    # Decode the final 'clean' prediction rather than the noisy 'z'
+    # Decoding pred_z_clean (the clean manifold) instead of z (the noisy path)
+    # is the secret to WANDB-level quality.
     return decode_latents_full_context(tokenizer, pred_z_clean.squeeze(0), cfg)
 
 def main():
@@ -167,7 +173,7 @@ def main():
     tokenizer, wm, builder = load_atari_models(cfg)
     video_frames = generate_atari_dream(cfg, wm, builder, tokenizer)
     
-    save_path = cfg.output_dir / "latest_atari_dream_latest.mp4"
+    save_path = cfg.output_dir / "final_latest_atari_dream_latest.mp4"
     H, W, _ = video_frames[0].shape
     out = cv2.VideoWriter(str(save_path), cv2.VideoWriter_fourcc(*'mp4v'), cfg.fps, (W, H))
     for frame in video_frames:
