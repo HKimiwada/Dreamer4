@@ -1,3 +1,4 @@
+# PYTHONPATH=. uv run torchrun --nproc_per_node=8 training_script/tokenizer/train_tokenizer_ddp_atari.py
 import os
 from pathlib import Path
 import torch

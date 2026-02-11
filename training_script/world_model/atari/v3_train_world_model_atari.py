@@ -30,6 +30,7 @@ KEY CHANGES FROM v2 (single-step):
 """
 
 import os
+import re
 import math
 import json
 import torch
@@ -130,6 +131,13 @@ class AtariWorldModelDataset(Dataset):
             "start_idx": start,
         }
 
+def prune_old_checkpoints(ckpt_dir: Path, keep: int = 3):
+    pts = sorted(
+        ckpt_dir.glob("wm_step*.pt"),
+        key=lambda p: int(re.findall(r"\d+", p.stem)[0])
+    )
+    for p in pts[:-keep]:
+        p.unlink()
 
 # ===========================================================================
 # Data Builder (unchanged architecture, cleaner interface)
@@ -585,6 +593,7 @@ def main():
             # Periodic checkpoint (not just best)
             if is_main and global_step % 10_000 == 0:
                 torch.save(wm.module.state_dict(), cfg.ckpt_dir / f"wm_step{global_step}.pt")
+                prune_old_checkpoints(cfg.ckpt_dir, keep=3)
 
             if is_main and global_step % cfg.visualize_interval == 0:
                 visualize_step(wm, builder, tokenizer, batch, cfg, global_step, device)
