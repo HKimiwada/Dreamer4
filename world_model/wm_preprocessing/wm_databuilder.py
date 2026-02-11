@@ -64,25 +64,18 @@ class DataBuilderWM(nn.Module):
         d_values = [ (2**i) / k_max for i in range(max_pow + 1) ]  # powers of 2 / k_max
         self.register_buffer("d_values", torch.tensor(d_values, dtype=torch.float32))
 
+    # In world_model/wm_preprocessing/wm_databuilder.py
     def sample_tau_and_d(self, B, T, device):
-        """
-        Sample step size d and signal levels tau according to shortcut schedule.
-        
-        Returns:
-            tau: (B, T) - signal levels in range [0, 1)
-            d: (B,) - step sizes
-        """
-        # Sample d as power of 2 divided by k_max
         max_pow = int(np.log2(self.k_max))
         pow_idx = torch.randint(0, max_pow + 1, (B,), device=device)
-        d = (2.0 ** pow_idx.float()) / self.k_max  # (B,)
         
-        # Sample tau on the grid defined by d
+        # Log-uniform sampling of d
+        d = (2.0 ** pow_idx.float()) / self.k_max # (B,)
+        
         tau = torch.zeros(B, T, device=device)
         for b in range(B):
             d_val = d[b].item()
             num_steps = int(1.0 / d_val)
-            # tau can be 0, d, 2d, ..., 1-d (not 1, since tau=1 means clean)
             step_idx = torch.randint(0, num_steps, (T,), device=device)
             tau[b] = step_idx.float() * d_val
         

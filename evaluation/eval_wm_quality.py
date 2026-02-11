@@ -21,7 +21,7 @@ from training_script.world_model.atari.train_world_model_atari import AtariDataB
 # --- Configuration (Aligned with Atari v4 Training) ---
 class AtariInferenceConfig:
     tokenizer_ckpt = Path("checkpoints/atari/tokenizer_v3/best_model.pt")
-    wm_ckpt_path = Path("checkpoints/world_model/atari_v4/best_wm.pt")
+    wm_ckpt_path = Path("checkpoints/world_model/atari_v6/best_wm.pt")
     latent_path = Path("data/atari/latent_sequences/video_full_frames.pt")
     actions_jsonl = Path("data/atari/raw/actions.jsonl")
     output_dir = Path("inference/results/world_model/atari")
@@ -209,43 +209,34 @@ def decode_gt_sequence(tokenizer, gt_frames, cfg):
 # --- Updated evaluate_world_model_psnr ---
 @torch.no_grad()
 def evaluate_world_model_psnr(cfg, wm, builder, tokenizer, step_start=0, actions=None):
-    """
-    Evaluates World Model quality by comparing a multi-step 'dream' 
-    to a ground truth sequence.
-    
-    Args:
-        actions: Optional tensor of shape (T,). If provided, uses these actions
-                 instead of the real ones from the dataset.
-    """
     device = cfg.device
     T_len = cfg.gen_length
     
-    # 1. Fetch GT frames and real actions
+    # 1. Fetch data
     gt_frames, gt_actions = get_eval_data(step_start, T_len) 
-    
-    # Use provided custom actions or fall back to ground truth
-    if actions is not None:
-        print(f"Using CUSTOM actions for evaluation...")
-        eval_actions = actions
-    else:
-        print(f"Using GROUND TRUTH actions for evaluation...")
-        eval_actions = gt_actions
-        
-    actions_tensor = eval_actions.unsqueeze(0).to(device) # (1, T)
+    eval_actions = actions if actions is not None else gt_actions
+    actions_tensor = eval_actions.unsqueeze(0).to(device)
 
-    # 2. Extract and Encode the SEED
-    first_frame_torch = torch.from_numpy(gt_frames[0]).permute(2, 0, 1).float() / 255.0
-    seed_frame_4d = first_frame_torch.unsqueeze(0).to(device)
+    # 2. MATCHING INITIALIZATION: Encode the first frame exactly like decode_gt_sequence does
+    # This ensures panel 3 & 4 start EXACTLY where panel 2 starts.
+    first_frame = gt_frames[:1] # Take only the first frame
     
+    # Use the logic from decode_gt_sequence for just one frame
+    frames_torch = torch.from_numpy(first_frame).permute(0, 3, 1, 2).float() / 255.0
+    frames_torch = frames_torch.to(device)
     patchifier = Patchifier(cfg.patch_size)
-    patches = patchifier(seed_frame_4d) 
+    patches = patchifier(frames_torch) 
     
     x = tokenizer.input_proj(patches)
-    x = x + tokenizer.pos_embed[:, :cfg.n_latents, :]
-    encoded = tokenizer._run_stack(x, tokenizer.encoder, T=1, N=cfg.n_latents)
+    x = x.unsqueeze(0) # (1, 1, N, D)
+    x_flat = x.view(1, 1 * cfg.n_latents, -1)
+    x_flat = x_flat + tokenizer.pos_embed[:, :cfg.n_latents, :]
+    
+    encoded = tokenizer._run_stack(x_flat, tokenizer.encoder, T=1, N=cfg.n_latents)
     seed_z = tokenizer.to_latent(encoded).view(1, 1, cfg.n_latents, cfg.latent_dim)
 
-    # 3. Initialize ODE Sequence
+    # 3. Initialize ODE Sequence with the Seed
+    # Important: Ensure the rest of the sequence is noise so the ODE has something to solve
     z = torch.randn(1, T_len, cfg.n_latents, cfg.latent_dim, device=device)
     z[:, 0] = seed_z
 
@@ -261,13 +252,16 @@ def evaluate_world_model_psnr(cfg, wm, builder, tokenizer, step_start=0, actions
         tokens = builder(z, actions_tensor, tau, d_map)
         wm_input = {"wm_input_tokens": tokens, "tau": tau, "d": d_map}
         
-        pred_z_clean = wm(wm_input, time_offsets=torch.zeros(1, dtype=torch.long, device=device))
+        # Ensure time_offsets matches the step_start to use correct positional context
+        time_offsets = torch.full((1,), step_start, dtype=torch.long, device=device)
+        pred_z_clean = wm(wm_input, time_offsets=time_offsets)
         pred_z_clean = torch.clamp(pred_z_clean, -5.0, 5.0)
         
         v_pred = (pred_z_clean - z) / (1.0 - t_curr + 1e-5)
         z[:, 1:] = z[:, 1:] + (v_pred[:, 1:] * dt)
 
-    predicted_frames = decode_latents_full_context(tokenizer, pred_z_clean.squeeze(0), cfg)
+    # Panel 3/4 Final Frames
+    predicted_frames = decode_latents_full_context(tokenizer, z.squeeze(0), cfg)
     avg_psnr, psnr_list = calculate_psnr(gt_frames, predicted_frames)
 
     return {
@@ -303,7 +297,7 @@ def main():
     dream_zero = eval_zero["predicted_frames"]
 
     # 5. Save Quad-Comparison: [RAW | RECON | REAL-DREAM | ZERO-DREAM]
-    save_path = cfg.output_dir / "counterfactual_test.mp4"
+    save_path = cfg.output_dir / "v7_lateset_counterfactual_test.mp4"
     H, W, _ = gt_frames[0].shape
     out = cv2.VideoWriter(str(save_path), cv2.VideoWriter_fourcc(*'mp4v'), cfg.fps, (W * 4, H))
     
